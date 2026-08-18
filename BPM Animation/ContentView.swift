@@ -15,20 +15,35 @@ private struct Ripple: Identifiable {
 }
 
 struct ContentView: View {
+    /// Пользователь предпочитает уменьшенное движение — заменяем волну и масштабы фейдами
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     /// Текущее (последнее вычисленное) значение BPM
     @State private var bpm = 119
     /// Время каждого тапа в текущей сессии настукивания
     @State private var tapTimes: [Date] = []
-    /// Бордер виден, пока пользователь взаимодействует с компонентом
-    @State private var strokeVisible = false
+    /// Прозрачность бордера: 0 — скрыт, 1 — виден; «дышит» после фиксации ритма
+    @State private var strokeOpacity: Double = 0
     /// Отложенная задача завершения сессии (сбрасывается каждым новым тапом)
     @State private var sessionEndTask: Task<Void, Never>?
+    /// Задача «дыхания» бордера после фиксации ритма
+    @State private var breatheTask: Task<Void, Never>?
     /// Активные волны из точек
     @State private var ripples: [Ripple] = []
     /// Время запуска последней волны — чтобы не стробить при быстром ритме
     @State private var lastRippleDate: Date?
     /// Счётчик тапов — триггер тактильного отклика
     @State private var tapCount = 0
+    /// Счётчик пробуждений — триггер хаптика пробуждения
+    @State private var wakeCount = 0
+    /// Счётчик фиксаций ритма — триггер финального хаптика и settle-анимации цифры
+    @State private var lockCount = 0
+    /// Палец сейчас прижат к компоненту
+    @State private var isPressed = false
+    /// Компонент «разбужен» первым тапом: рамка видна, ждём настукивания
+    @State private var isAwake = false
+    /// Ритм зафиксирован, рамка ещё «дышит» и догорает
+    @State private var isSettling = false
 
     /// Пауза, после которой считаем, что пользователь закончил настукивать
     private let sessionTimeout: TimeInterval = 2.0
@@ -41,23 +56,64 @@ struct ContentView: View {
     private let rippleBandWidth: Double = 38       // ширина светящегося фронта
     private let rippleMinInterval: TimeInterval = 0.3 // не чаще одной волны в 0.3с
 
-    /// Первые 3 тапа показываем прочерки (-, --, ---), с 4-го — настуканный BPM
-    private var displayText: String {
-        if !tapTimes.isEmpty && tapTimes.count < 4 {
-            return String(repeating: "-", count: tapTimes.count)
+    /// true, пока показываем прочерки первых трёх тапов
+    private var isCountingIn: Bool {
+        !tapTimes.isEmpty && tapTimes.count < 4
+    }
+
+    /// Подпись под цифрой: название темпа показываем только когда рамка полностью
+    /// пропала; пока тапаем или рамка дышит — подсказки
+    private var hintText: String {
+        if !tapTimes.isEmpty || isSettling { return "A few more taps" }
+        if isAwake { return "Tap the BPM" }
+        return tempoMarking
+    }
+
+    /// Классическое музыкальное обозначение темпа для текущего BPM
+    private var tempoMarking: String {
+        switch bpm {
+        case ..<40: "grave"
+        case 40..<60: "largo"
+        case 60..<66: "larghetto"
+        case 66..<76: "adagio"
+        case 76..<108: "andante"
+        case 108..<116: "moderato"
+        case 116..<168: "allegro"
+        case 168..<200: "presto"
+        default: "prestissimo"
         }
-        return "\(bpm)"
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            Text(displayText)
-                .font(.system(size: 130))
-                .foregroundStyle(.primary)
-                .frame(height: 154)
+            ZStack {
+                if isCountingIn {
+                    // Прочерки первых трёх тапов
+                    Text(String(repeating: "-", count: tapTimes.count))
+                        .contentTransition(.opacity)
+                        .transition(.blurReplace)
+                } else {
+                    // Цифры перекатываются вверх/вниз, как в системном Таймере
+                    Text("\(bpm)")
+                        .contentTransition(.numericText(value: Double(bpm)))
+                        .transition(.blurReplace)
+                }
+            }
+            .font(.system(size: 130))
+            .foregroundStyle(.primary)
+            .frame(height: 154)
+            // Момент фиксации ритма: цифра делает едва заметный «кивок» и упруго оседает
+            .phaseAnimator([1.0, 1.02], trigger: lockCount) { view, scale in
+                view.scaleEffect(reduceMotion ? 1.0 : scale)
+            } animation: { scale in
+                scale > 1.0
+                    ? .smooth(duration: 0.15)
+                    : .spring(duration: 0.45, bounce: 0.35)
+            }
 
-            Text("tap the bpm")
+            Text(hintText)
                 .textCase(.uppercase)
+                .contentTransition(.opacity)
                 .font(.system(size: 14))
                 .foregroundStyle(.secondary)
         }
@@ -81,23 +137,42 @@ struct ContentView: View {
                     ),
                     lineWidth: 0.5
                 )
-                .opacity(strokeVisible ? 1 : 0)
+                .opacity(strokeOpacity)
         }
         .contentShape(RoundedRectangle(cornerRadius: 40, style: .continuous))
-        .onTapGesture(coordinateSpace: .local) { location in
-            registerTap(at: location)
-        }
-        // Компонент мягко «раздувается» при взаимодействии — синхронно
-        // с появлением и исчезновением бордера
-        .scaleEffect(strokeVisible ? 1.03 : 1.0)
+        // Тап регистрируем в момент касания (а не отпускания) — точнее темп,
+        // мгновеннее отклик; заодно отслеживаем прижатый палец
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                .onChanged { value in
+                    guard !isPressed else { return }
+                    withAnimation(.snappy(duration: 0.18)) {
+                        isPressed = true
+                    }
+                    registerTap(at: value.startLocation)
+                }
+                .onEnded { _ in
+                    withAnimation(.snappy(duration: 0.18)) {
+                        isPressed = false
+                    }
+                }
+        )
+        // Компонент едва заметно поджимается под пальцем, как физическая кнопка
+        .scaleEffect(reduceMotion || !isPressed ? 1.0 : 0.985)
+        // …и мягко «раздувается» при взаимодействии — следует за прозрачностью бордера
+        .scaleEffect(reduceMotion ? 1.0 : 1.0 + 0.03 * strokeOpacity)
         // Мягкий тактильный отклик на каждый тап
         .sensoryFeedback(.impact(flexibility: .soft, intensity: 0.7), trigger: tapCount)
+        // Более ощутимый хаптик пробуждения — компонент «ожил»
+        .sensoryFeedback(.impact(flexibility: .solid, intensity: 0.9), trigger: wakeCount)
+        // Отдельный хаптик «значение принято» в момент фиксации ритма
+        .sensoryFeedback(.success, trigger: lockCount)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     /// Сетка точек, по которой от места касания расходится мягкая волна
     private var dotWave: some View {
-        TimelineView(.animation(minimumInterval: nil, paused: ripples.isEmpty)) { timeline in
+        TimelineView(.animation(minimumInterval: 1.0 / 60, paused: ripples.isEmpty)) { timeline in
             Canvas { context, size in
                 let now = timeline.date
 
@@ -122,8 +197,11 @@ struct ContentView: View {
                             y: yInset + CGFloat(row) * dotSpacing
                         )
 
-                        // Яркость точки — максимум по всем активным волнам
+                        // Яркость точки — максимум по всем активным волнам;
+                        // сильнейшая волна ещё и слегка сдвигает точку наружу
                         var intensity: Double = 0
+                        var pushX: Double = 0
+                        var pushY: Double = 0
                         for (index, ripple) in ripples.enumerated() {
                             let t = now.timeIntervalSince(ripple.startDate)
                             guard t >= 0, t < rippleDuration else { continue }
@@ -141,15 +219,25 @@ struct ContentView: View {
                             let band = exp(-pow(delta / width, 2))
                             // Плавное общее затухание волны со временем
                             let fade = pow(1 - progress, 1.2)
-                            intensity = max(intensity, band * fade)
+                            let contribution = band * fade
+
+                            if contribution > intensity {
+                                intensity = contribution
+                                // Рябь на воде: фронт смещает точку от центра волны
+                                if distance > 0.001 {
+                                    let push = 4.0 * contribution
+                                    pushX = (point.x - ripple.center.x) / distance * push
+                                    pushY = (point.y - ripple.center.y) / distance * push
+                                }
+                            }
                         }
 
                         guard intensity > 0.02 else { continue }
 
                         // Точка деликатно увеличивается на пике волны
-                        let radius = 0.6 + 0.5 * intensity
+                        let radius = 0.85 + 0.65 * intensity
                         let rect = CGRect(
-                            x: point.x - radius, y: point.y - radius,
+                            x: point.x + pushX - radius, y: point.y + pushY - radius,
                             width: radius * 2, height: radius * 2
                         )
                         context.fill(
@@ -163,35 +251,63 @@ struct ContentView: View {
         .allowsHitTesting(false)
     }
 
-    /// Регистрирует тап: запускает волну, обновляет BPM с 4-го тапа и перезапускает таймер сессии
+    /// Регистрирует тап: первый тап пробуждает компонент,
+    /// дальше — волны, прочерки и подсчёт BPM
     private func registerTap(at location: CGPoint) {
         sessionEndTask?.cancel()
-        tapTimes.append(Date())
+        breatheTask?.cancel()
+
+        // Первый тап только «будит» компонент: появляется рамка,
+        // подпись меняется на приглашение — без волн и прочерков
+        if !isAwake {
+            wakeCount += 1
+            withAnimation(.smooth(duration: 0.35)) {
+                isAwake = true
+                isSettling = false
+                strokeOpacity = 1
+            }
+            scheduleSessionEnd()
+            return
+        }
+
         tapCount += 1
+
+        // Пружинная анимация: прочерки материализуются через blur,
+        // цифры перекатываются numericText-переходом
+        withAnimation(.smooth(duration: 0.25)) {
+            tapTimes.append(Date())
+            if tapTimes.count >= 4 {
+                bpm = computedBPM()
+            }
+        }
 
         // Волна из точек рождается под пальцем.
         // При быстром ритме (вплоть до 360 BPM) волны запускаем не на каждый тап,
         // а не чаще rippleMinInterval — иначе анимация стробит.
-        let now = Date()
-        if lastRippleDate.map({ now.timeIntervalSince($0) >= rippleMinInterval }) ?? true {
-            lastRippleDate = now
-            let ripple = Ripple(center: location, startDate: now)
-            ripples.append(ripple)
-            Task {
-                try? await Task.sleep(for: .seconds(rippleDuration))
-                ripples.removeAll { $0.id == ripple.id }
+        // При включённом Reduce Motion волну не показываем вовсе.
+        if !reduceMotion {
+            let now = Date()
+            if lastRippleDate.map({ now.timeIntervalSince($0) >= rippleMinInterval }) ?? true {
+                lastRippleDate = now
+                let ripple = Ripple(center: location, startDate: now)
+                ripples.append(ripple)
+                Task {
+                    try? await Task.sleep(for: .seconds(rippleDuration))
+                    ripples.removeAll { $0.id == ripple.id }
+                }
             }
         }
 
-        // Подсветка плавно появляется, как только пользователь начал взаимодействовать
-        withAnimation(.easeOut(duration: 0.35)) {
-            strokeVisible = true
+        // Подсветка возвращается к полной яркости (могла притухнуть при дыхании)
+        withAnimation(.smooth(duration: 0.35)) {
+            strokeOpacity = 1
         }
 
-        if tapTimes.count >= 4 {
-            bpm = computedBPM()
-        }
+        scheduleSessionEnd()
+    }
 
+    /// Перезапускает таймер завершения сессии
+    private func scheduleSessionEnd() {
         sessionEndTask = Task {
             try? await Task.sleep(for: .seconds(sessionTimeout))
             guard !Task.isCancelled else { return }
@@ -199,11 +315,42 @@ struct ContentView: View {
         }
     }
 
-    /// Пользователь перестал настукивать: сбрасываем сессию, подсветка плавно затухает
+    /// Пользователь перестал настукивать: фиксируем ритм.
+    /// Бордер пару раз «вздыхает» в настуканном темпе и мягко гаснет.
     private func endSession() {
-        tapTimes = []
-        withAnimation(.easeOut(duration: 0.45)) {
-            strokeVisible = false
+        let locked = tapTimes.count >= 4
+        withAnimation(.smooth(duration: 0.3)) {
+            tapTimes = []
+            isAwake = false
+        }
+
+        guard locked else {
+            withAnimation(.smooth(duration: 0.45)) {
+                strokeOpacity = 0
+            }
+            return
+        }
+
+        // Момент фиксации: settle-кивок цифры + success-хаптик
+        lockCount += 1
+        isSettling = true
+
+        breatheTask = Task {
+            // Дыхание в настуканном темпе (в разумных пределах)
+            let beat = min(max(60.0 / Double(bpm), 0.25), 1.0)
+            for _ in 0..<2 {
+                withAnimation(.smooth(duration: beat * 0.45)) { strokeOpacity = 0.35 }
+                try? await Task.sleep(for: .seconds(beat * 0.5))
+                guard !Task.isCancelled else { return }
+                withAnimation(.smooth(duration: beat * 0.45)) { strokeOpacity = 1.0 }
+                try? await Task.sleep(for: .seconds(beat * 0.5))
+                guard !Task.isCancelled else { return }
+            }
+            // Рамка пропадает — и только теперь подпись меняется на название темпа
+            withAnimation(.smooth(duration: 0.5)) {
+                strokeOpacity = 0
+                isSettling = false
+            }
         }
     }
 
