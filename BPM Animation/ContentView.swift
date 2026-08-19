@@ -85,6 +85,19 @@ struct ContentView: View {
     }
 
     var body: some View {
+        VStack(spacing: 48) {
+            bpmBlock
+
+            // Демо-волна внизу: зацикленный «тап» по центру — только точки,
+            // без рамки, букв и цифр
+            DotWaveLoopView()
+                .frame(width: 349, height: 172)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Основной интерактивный блок с цифрой и подсказкой
+    private var bpmBlock: some View {
         VStack(spacing: 0) {
             ZStack {
                 if isCountingIn {
@@ -167,7 +180,6 @@ struct ContentView: View {
         .sensoryFeedback(.impact(flexibility: .solid, intensity: 0.9), trigger: wakeCount)
         // Отдельный хаптик «значение принято» в момент фиксации ритма
         .sensoryFeedback(.success, trigger: lockCount)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     /// Сетка точек, по которой от места касания расходится мягкая волна
@@ -361,6 +373,71 @@ struct ContentView: View {
         let average = intervals.reduce(0, +) / Double(intervals.count)
         guard average > 0 else { return bpm }
         return min(Int((60.0 / average).rounded()), maxBPM)
+    }
+}
+
+/// Зацикленная демо-волна: точки расходятся от центра, как от прожатого тапа
+private struct DotWaveLoopView: View {
+    // Те же параметры, что у волны основного компонента
+    private let dotSpacing: CGFloat = 13
+    private let rippleDuration: TimeInterval = 1.4
+    private let rippleBandWidth: Double = 38
+    /// Полный цикл: волна + короткая пауза перед следующим «тапом»
+    private let loopPeriod: TimeInterval = 2.2
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 60)) { timeline in
+            Canvas { context, size in
+                let cycle = timeline.date.timeIntervalSinceReferenceDate
+                    .truncatingRemainder(dividingBy: loopPeriod)
+                guard cycle < rippleDuration else { return }
+
+                let center = CGPoint(x: size.width / 2, y: size.height / 2)
+                let cols = Int(size.width / dotSpacing)
+                let rows = Int(size.height / dotSpacing)
+                let xInset = (size.width - CGFloat(cols - 1) * dotSpacing) / 2
+                let yInset = (size.height - CGFloat(rows - 1) * dotSpacing) / 2
+
+                let maxRadius = hypot(size.width / 2, size.height / 2) + rippleBandWidth
+                let progress = cycle / rippleDuration
+                let waveRadius = maxRadius * (1 - pow(1 - progress, 2.2))
+                let fade = pow(1 - progress, 1.2)
+
+                for row in 0..<rows {
+                    for col in 0..<cols {
+                        let point = CGPoint(
+                            x: xInset + CGFloat(col) * dotSpacing,
+                            y: yInset + CGFloat(row) * dotSpacing
+                        )
+
+                        let distance = hypot(point.x - center.x, point.y - center.y)
+                        let delta = distance - waveRadius
+                        let width = delta < 0 ? rippleBandWidth * 1.8 : rippleBandWidth
+                        let intensity = exp(-pow(delta / width, 2)) * fade
+                        guard intensity > 0.02 else { continue }
+
+                        var pushX = 0.0
+                        var pushY = 0.0
+                        if distance > 0.001 {
+                            let push = 4.0 * intensity
+                            pushX = (point.x - center.x) / distance * push
+                            pushY = (point.y - center.y) / distance * push
+                        }
+
+                        let radius = 0.85 + 0.65 * intensity
+                        let rect = CGRect(
+                            x: point.x + pushX - radius, y: point.y + pushY - radius,
+                            width: radius * 2, height: radius * 2
+                        )
+                        context.fill(
+                            Path(ellipseIn: rect),
+                            with: .color(.white.opacity(0.38 * intensity))
+                        )
+                    }
+                }
+            }
+        }
+        .allowsHitTesting(false)
     }
 }
 
