@@ -178,34 +178,41 @@ struct MetronomePendulumView: View {
                     )
 
                     // Кружки-деления между долями; плотность зависит от размера.
-                    // Подсвечиваются и подрастают, когда точка пролетает мимо.
+                    // На первом круге точка «рисует» контур: каждый кружок рождается
+                    // ровно в момент, когда она его проходит (с учётом косинусного
+                    // сглаживания дуги). Подсвечиваются, когда точка пролетает мимо.
                     let slotsPerGap = signature.ticksPerGap + 1
                     let tickSlots = beats * slotsPerGap
-                    let orbitAppear = smooth((t - 0.2) / 0.5)
-                    if orbitAppear > 0.001 {
-                        for tick in 0..<tickSlots where tick % slotsPerGap != 0 {
-                            let tickAngle = -Double.pi / 2 + Double(tick) * 2 * .pi / Double(tickSlots)
-                            let tickPos = CGPoint(
-                                x: center.x + radius * CGFloat(cos(tickAngle)),
-                                y: center.y + radius * CGFloat(sin(tickAngle))
-                            )
-                            let tickDistance = hypot(dotPos.x - tickPos.x, dotPos.y - tickPos.y)
-                            let glow = max(0, 1 - tickDistance / 34)
-                            // «Вселение»: когда точка ныряет внутрь, кружок раздувается,
-                            // принимая её свет, и сдувается, когда она выпрыгивает
-                            let swallow = max(0, 1 - tickDistance / 26)
-                            let tickRadius = (2 + 1.2 * glow + 5.5 * swallow * swallow) * orbitAppear
-                            let tickRect = CGRect(
-                                x: tickPos.x - tickRadius, y: tickPos.y - tickRadius,
-                                width: tickRadius * 2, height: tickRadius * 2
-                            )
-                            context.fill(
-                                Path(ellipseIn: tickRect),
-                                with: .color(.white.opacity(
-                                    min(0.95, 0.18 + 0.5 * glow + 0.35 * swallow) * orbitAppear
-                                ))
-                            )
-                        }
+                    for tick in 0..<tickSlots where tick % slotsPerGap != 0 {
+                        // Момент пролёта: доля + фаза внутри дуги (обратная easing-кривой)
+                        let gapIndex = Double(tick / slotsPerGap)
+                        let fraction = Double(tick % slotsPerGap) / Double(slotsPerGap)
+                        let phaseAtTick = acos(1 - 2 * fraction) / .pi
+                        let bornTime = (gapIndex + phaseAtTick) * interval
+                        let tickAppear = smooth((t - bornTime) / 0.35)
+                        guard tickAppear > 0.001 else { continue }
+
+                        let tickAngle = -Double.pi / 2 + Double(tick) * 2 * .pi / Double(tickSlots)
+                        let tickPos = CGPoint(
+                            x: center.x + radius * CGFloat(cos(tickAngle)),
+                            y: center.y + radius * CGFloat(sin(tickAngle))
+                        )
+                        let tickDistance = hypot(dotPos.x - tickPos.x, dotPos.y - tickPos.y)
+                        let glow = max(0, 1 - tickDistance / 34)
+                        // «Вселение»: когда точка ныряет внутрь, кружок раздувается,
+                        // принимая её свет, и сдувается, когда она выпрыгивает
+                        let swallow = max(0, 1 - tickDistance / 26)
+                        let tickRadius = (2 + 1.2 * glow + 5.5 * swallow * swallow) * tickAppear
+                        let tickRect = CGRect(
+                            x: tickPos.x - tickRadius, y: tickPos.y - tickRadius,
+                            width: tickRadius * 2, height: tickRadius * 2
+                        )
+                        context.fill(
+                            Path(ellipseIn: tickRect),
+                            with: .color(.white.opacity(
+                                min(0.95, 0.18 + 0.5 * glow + 0.35 * swallow) * tickAppear
+                            ))
+                        )
                     }
 
                     let meltRange: CGFloat = 60
@@ -222,8 +229,10 @@ struct MetronomePendulumView: View {
                             nearestIndex = index
                         }
 
-                        // Появление с каскадной задержкой по часовой стрелке
-                        let appear = smooth((t - 0.07 * Double(index)) / 0.5)
+                        // Круг доли рождается в момент, когда точка впервые
+                        // доезжает до него — точка «рисует» контур на первом круге
+                        let bornTime = Double(index) * interval
+                        let appear = smooth((t - bornTime) / 0.4)
                         guard appear > 0.001 else { continue }
 
                         // Последний удар по этому кругу (круг index бьётся на долях index, index+beats, ...)
