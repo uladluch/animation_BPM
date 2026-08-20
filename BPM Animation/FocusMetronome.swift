@@ -14,8 +14,10 @@ import SwiftUI
 
 /// Сила удара доли
 enum BeatAccent {
-    /// Беззвучная доля: нет щелчка, вспышки и волны — только движение точки
+    /// Беззвучная доля (пауза): нет щелчка, вспышки и волны — только движение точки
     case mute
+    /// Слабый удар: звучит, но вспышка и пульс приглушены
+    case weak
     /// Обычный удар
     case medium
     /// Сильный акцент: ярче вспышка, плотнее пульс, крупнее метки
@@ -57,17 +59,10 @@ enum RhythmPreset: String, CaseIterable, Identifiable {
         case .sixEight: Self.compoundMeter(beats: 6, groupSize: 3)
         case .twelveEight: Self.compoundMeter(beats: 12, groupSize: 3)
         case .experimental:
-            // Синкопированный рисунок на 8 долей: цветные акценты и паузы
-            [
-                BeatStyle(accent: .strong, color: .beatLime),
-                BeatStyle(accent: .mute),
-                BeatStyle(accent: .medium, color: .beatCyan),
-                BeatStyle(accent: .mute),
-                BeatStyle(accent: .strong, color: .beatAmber),
-                BeatStyle(accent: .medium),
-                BeatStyle(accent: .mute),
-                BeatStyle(accent: .medium, color: .beatCoral)
-            ]
+            // Джент в духе Meshuggah: такт из 16 шестнадцатых,
+            // удары группами 2+3+2+3+3+3 (старты групп), между ними тишина.
+            // Единственный сильный акцент — на единице.
+            Self.meshuggah()
         }
     }
 
@@ -79,6 +74,20 @@ enum RhythmPreset: String, CaseIterable, Identifiable {
     /// Составной размер: сильная доля в начале каждой группы восьмых
     private static func compoundMeter(beats: Int, groupSize: Int) -> [BeatStyle] {
         (0..<beats).map { BeatStyle(accent: $0 % groupSize == 0 ? .strong : .medium) }
+    }
+
+    /// Джент-рисунок: 12 шестнадцатых непрерывного «чуга» слабыми ударами,
+    /// акценты на стартах групп 2+3+2+3+3+3 (единица — единственный сильный),
+    /// одна пауза-«вдох» перед возвратом на единицу.
+    private static func meshuggah() -> [BeatStyle] {
+        var beats = Array(repeating: BeatStyle(accent: .weak), count: 12)
+        beats[0] = BeatStyle(accent: .strong, color: .beatLime)
+        beats[2] = BeatStyle(accent: .medium)
+        beats[5] = BeatStyle(accent: .medium, color: .beatCyan)
+        beats[7] = BeatStyle(accent: .medium, color: .beatAmber)
+        beats[9] = BeatStyle(accent: .medium, color: .beatCoral)
+        beats[11] = BeatStyle(accent: .mute)
+        return beats
     }
 }
 
@@ -129,10 +138,12 @@ struct MetronomeFlashView: View {
                     : PendulumGeometry.rightX(size)
                 let hitCenter = CGPoint(x: hitX, y: PendulumGeometry.midY(size))
 
+                // Вспышка строго следует иерархии акцентов
                 let accentPeak: Double = switch style.accent {
                 case .mute: 0
-                case .medium: 0.18
-                case .strong: 0.32
+                case .weak: 0.22
+                case .medium: 0.5
+                case .strong: 1.0
                 }
                 let tempoDim = 0.35 + 0.65 * min(1, interval / 0.5)
                 let calmFactor = (reduceMotion || dimFlashingLights) ? 0.12 : 1.0
@@ -175,7 +186,9 @@ struct MetronomePendulumView: View {
     let startDate: Date
     let bpm: Int
     let pattern: [BeatStyle]
-
+    let indicatorsOnTop: Bool
+    let topIndicatorY: CGFloat?
+    
     /// Доступность: убираем стробирующие и «летающие» эффекты
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -195,6 +208,7 @@ struct MetronomePendulumView: View {
     private func pulseAmplitude(for accent: BeatAccent) -> Double {
         switch accent {
         case .mute: 0
+        case .weak: 0.08
         case .medium: 0.14
         case .strong: 0.2
         }
@@ -239,20 +253,26 @@ struct MetronomePendulumView: View {
                 let nearestHitBeat = phase < 0.5 ? beatIndex : beatIndex + 1
                 let nearestHitStyle = style(ofBeat: nearestHitBeat)
 
-                // «Температура» сцены: каждый удар оставляет в бобах остаточное
-                // свечение — ступенькой ярче с каждой долей. К концу такта бобы
-                // тлеют, а на сильной доле сбрасываются в серый с «выдохом».
+                // «Температура» сцены: остаточное свечение копят только
+                // звучащие доли — пауза тепла не оставляет. К концу такта бобы
+                // тлеют, а на единице сбрасываются в серый с «выдохом».
+                let soundingTotal = pattern.filter { $0.accent != .mute }.count
                 let barHeat: Double
-                if beats <= 1 {
+                if soundingTotal <= 1 {
                     barHeat = 0
                 } else if currentBeat == 0 {
-                    // Выдох на сильной доле: накопленный накал плавно отпускается.
+                    // Выдох на единице: накопленный накал плавно отпускается.
                     // В самом первом такте копить ещё нечего — остаёмся холодными.
                     barHeat = barIndex == 0 ? 0 : 1 - smooth(sinceHit / 0.55)
                 } else {
-                    // Очередной удар добавляет ступеньку тепла (с мягким фронтом)
-                    let step = 1.0 / Double(beats - 1)
-                    barHeat = (Double(currentBeat - 1) + smooth(sinceHit / 0.25)) * step
+                    var soundedBefore = 0
+                    for beat in 0..<currentBeat where pattern[beat].accent != .mute {
+                        soundedBefore += 1
+                    }
+                    // Звучащая доля добавляет ступеньку тепла (с мягким фронтом),
+                    // на паузе уровень просто держится
+                    let front = pattern[currentBeat].accent != .mute ? smooth(sinceHit / 0.25) : 0
+                    barHeat = max(0, (Double(soundedBefore - 1) + front) / Double(soundingTotal - 1))
                 }
 
                 // Эхо-волна: каждый звучащий удар пускает от боба тусклую волну
@@ -299,7 +319,12 @@ struct MetronomePendulumView: View {
                                 let bandWidth = delta < 0 ? 54.0 : 34.0
                                 let band = exp(-pow(Double(delta) / bandWidth, 2))
                                 let fade = pow(1 - progress, 1.3)
-                                let contribution = band * fade * (wave.style.accent == .strong ? 1.25 : 1)
+                                let accentBoost: Double = switch wave.style.accent {
+                                case .strong: 1.25
+                                case .weak: 0.65
+                                default: 1
+                                }
+                                let contribution = band * fade * accentBoost
                                 if contribution > intensity {
                                     intensity = contribution
                                     waveColor = wave.style.color
@@ -307,12 +332,14 @@ struct MetronomePendulumView: View {
                             }
                             guard intensity > 0.03 else { continue }
                             let dotRadius = 0.8 + 0.6 * intensity
+                            let accessibilityDim = reduceMotion ? 0.7 : 1.0
+                            let finalOpacity = 0.18 * intensity * accessibilityDim
                             context.fill(
                                 Path(ellipseIn: CGRect(
                                     x: point.x - dotRadius, y: point.y - dotRadius,
                                     width: dotRadius * 2, height: dotRadius * 2
                                 )),
-                                with: .color(waveColor.opacity(0.14 * intensity))
+                                with: .color(waveColor.opacity(finalOpacity))
                             )
                         }
                     }
@@ -374,80 +401,103 @@ struct MetronomePendulumView: View {
                     )
                     let bean = Path(roundedRect: rect, cornerRadius: min(width, height) / 2)
 
-                    // Базовый серый теплеет с каждым ударом такта
-                    let base = 0.22 + 0.3 * barHeat
+                    let nearestIsMute = nearestHitStyle.accent == .mute
+                    let base = nearestIsMute ? 0.22 : (0.22 + 0.3 * barHeat)
                     context.fill(bean, with: .color(.white.opacity(base * appear)))
-                    // При приближении точки боб разгорается в цвете своей доли
-                    if proximity > 0.01 {
+
+                    // При приближении точки боб разгорается в цвете своей доли —
+                    // яркость строго по иерархии акцентов: пауза не светится,
+                    // слабый — вполсилы, сильный — ярче обычного
+                    if proximity > 0.01, nearestHitStyle.accent != .mute {
+                        let glowScale: Double = switch nearestHitStyle.accent {
+                        case .weak: 0.5
+                        case .strong: 1.15
+                        default: 1.0
+                        }
+                        let glow = min(0.95, pow(proximity, 1.6) * glowScale)
                         context.fill(
                             bean,
-                            with: .color(nearestHitStyle.color.opacity(pow(proximity, 1.6) * appear))
+                            with: .color(nearestHitStyle.color.opacity(glow * appear))
                         )
                     }
                 }
 
-                // Счёт тактов над маятником: цифра меняется раз в такт
-                // (на сильной доле) и идёт по кругу до размера —
-                // для 4/4: такт 1, 2, 3, 4 → снова 1
-                let barNumber = barIndex % beats + 1
-                let sinceBarStart = t - Double(barIndex) * barDuration
-                let barPhase = sinceBarStart / barDuration
-                let numberAppear = smooth(sinceBarStart / 0.07)
-                let numberFade = 1 - smooth((barPhase - 0.85) / 0.15)
-                let numberOpacity = numberAppear * numberFade * 0.9
-                if numberOpacity > 0.01 {
-                    var numberContext = context
-                    let pop = 1 + 0.1 * exp(-sinceBarStart / 0.15)
-                    numberContext.translateBy(x: centerX, y: midY - 120)
-                    numberContext.scaleBy(x: pop, y: pop)
-                    numberContext.opacity = numberOpacity
-                    numberContext.draw(
-                        Text("\(barNumber)")
-                            .font(.system(size: 64, weight: .thin))
-                            .foregroundStyle(.white),
-                        at: .zero
-                    )
+                // Мини-бобы долей под маятником: форма кодирует акцент —
+                // длинный залитый боб — сильная доля, обычный залитый — средняя,
+                // сплющенный маленький контур — беззвучная (mute). Цвет — цвет
+                // доли. Весь рисунок такта виден сразу, целиком.
+                let indicatorSpacing: CGFloat = beats > 8 ? 18 : 24
+                let indicatorY: CGFloat
+                if indicatorsOnTop {
+                    indicatorY = topIndicatorY ?? (midY - 96)
+                } else {
+                    indicatorY = midY + 96
                 }
-
-                // Точки-доли такта под маятником: позиция в такте всегда видна.
-                // Каждая метка в цвете своей доли: сильные крупнее, беззвучные —
-                // едва заметные. Рождаются по одной на первом такте.
-                let indicatorSpacing: CGFloat = beats > 8 ? 16 : 22
-                let indicatorY = midY + 96
                 let rowWidth = indicatorSpacing * CGFloat(beats - 1)
+                let rowAppear = smooth(t / 0.4)
                 for beat in 0..<beats {
-                    let bornTime = Double(beat) * interval
-                    let indicatorAppear = smooth((t - bornTime) / 0.35)
-                    guard indicatorAppear > 0.001 else { continue }
-
                     let beatStyle = pattern[beat]
-                    var brightness: Double
-                    var indicatorRadius: CGFloat
+                    let heat = beat == currentBeat ? exp(-sinceHit / 0.35) : 0
+
+                    var miniWidth: CGFloat
+                    var miniHeight: CGFloat
                     switch beatStyle.accent {
                     case .mute:
-                        brightness = 0.12
-                        indicatorRadius = 2.5
+                        miniWidth = 8
+                        miniHeight = 4
+                    case .weak:
+                        miniWidth = 8
+                        miniHeight = 5
                     case .medium:
-                        brightness = 0.25
-                        indicatorRadius = 3
+                        miniWidth = 6
+                        miniHeight = 14
                     case .strong:
-                        brightness = 0.4
-                        indicatorRadius = 4.5
+                        miniWidth = 7
+                        miniHeight = 22
                     }
-                    if beat == currentBeat {
-                        let heat = exp(-sinceHit / 0.35)
-                        brightness = min(1, brightness + 0.6 * heat + 0.15)
-                        indicatorRadius += CGFloat(1.2 * heat)
-                    }
+                    // На своей доле мини-боб подрастает и вспыхивает
+                    let grow = CGFloat(1 + 0.25 * heat)
+                    miniWidth *= grow
+                    miniHeight *= grow
+
                     let indicatorX = centerX - rowWidth / 2 + indicatorSpacing * CGFloat(beat)
-                    let indicatorRect = CGRect(
-                        x: indicatorX - indicatorRadius, y: indicatorY - indicatorRadius,
-                        width: indicatorRadius * 2, height: indicatorRadius * 2
+                    let miniRect = CGRect(
+                        x: indicatorX - miniWidth / 2, y: indicatorY - miniHeight / 2,
+                        width: miniWidth, height: miniHeight
                     )
-                    context.fill(
-                        Path(ellipseIn: indicatorRect),
-                        with: .color(beatStyle.color.opacity(brightness * indicatorAppear))
+                    let miniBean = Path(
+                        roundedRect: miniRect,
+                        cornerRadius: min(miniWidth, miniHeight) / 2
                     )
+                    let isActive = beat == currentBeat
+                    // Цвет: верхние неактивные — единый серый; активная — цвет доли
+                    let baseColor: Color = isActive ? beatStyle.color : (indicatorsOnTop ? Color.white.opacity(0.8) : beatStyle.color)
+
+                    switch beatStyle.accent {
+                    case .mute:
+                        // Пауза — пустой сплющенный контур
+                        let strokeOpacity: Double = isActive ? (0.3 + 0.5 * heat) * rowAppear : (indicatorsOnTop ? 0.35 * rowAppear : (0.3 + 0.5 * heat) * rowAppear)
+                        context.stroke(
+                            miniBean,
+                            with: .color(baseColor.opacity(strokeOpacity)),
+                            lineWidth: 1
+                        )
+                    case .weak, .medium, .strong:
+                        // Залитые: нормализуем непрозрачность для верхних неактивных,
+                        // чтобы длина боба не воспринималась как бОльшая яркость
+                        let activeBase: Double = switch beatStyle.accent {
+                        case .strong: 0.45
+                        case .medium: 0.3
+                        default: 0.25
+                        }
+                        let activeOpacity = min(1, activeBase + 0.55 * heat) * rowAppear
+                        let passiveOpacity = indicatorsOnTop ? (0.38 * rowAppear) : activeOpacity
+                        let finalOpacity = isActive ? activeOpacity : passiveOpacity
+                        context.fill(
+                            miniBean,
+                            with: .color(baseColor.opacity(finalOpacity))
+                        )
+                    }
                 }
 
                 // Комета-шлейф: деликатный, чтобы героем оставалась точка;
@@ -477,21 +527,25 @@ struct MetronomePendulumView: View {
                 let dotAppear = smooth(t / 0.45)
                 guard dotAppear > 0.001 else { return }
 
-                let morph = max(0, 1 - nearestDistance / meltRange)
+                let nearestIsMute = nearestHitStyle.accent == .mute
+                let effectiveMorph = nearestIsMute ? 0.0 : max(0, 1 - nearestDistance / meltRange)
                 let dotDiameter: CGFloat = 22 * CGFloat(0.5 + 0.5 * dotAppear)
                 // Вытягивание по ходу движения, объём сохраняется; у бобов гаснет
-                let stretch = reduceMotion ? 1 : 1 + 0.22 * speed * (1 - morph)
+                let stretchBase = reduceMotion ? 1.0 : (1 + 0.22 * speed * (1 - effectiveMorph))
+                let stretch = nearestIsMute ? 1.0 : stretchBase
                 var dotWidth = dotDiameter * CGFloat(stretch)
                 var dotHeight = dotDiameter / CGFloat(stretch)
                 // Цель морфа — тот же раздутый вертикальный боб:
                 // в момент слияния формы совпадают один в один
-                let targetInflate = CGFloat(pow(morph, 1.3))
-                let targetWidth = beanWidth * (1 + 0.55 * targetInflate)
-                let targetHeight = beanHeight * (1 + 0.18 * targetInflate)
-                dotWidth += (targetWidth - dotWidth) * morph
-                dotHeight += (targetHeight - dotHeight) * morph
+                if !nearestIsMute {
+                    let targetInflate = CGFloat(pow(effectiveMorph, 1.3))
+                    let targetWidth = beanWidth * (1 + 0.55 * targetInflate)
+                    let targetHeight = beanHeight * (1 + 0.18 * targetInflate)
+                    dotWidth += (targetWidth - dotWidth) * effectiveMorph
+                    dotHeight += (targetHeight - dotHeight) * effectiveMorph
+                }
 
-                let attraction = morph * morph
+                let attraction = nearestIsMute ? 0.0 : (effectiveMorph * effectiveMorph)
                 let dotCenterX = x + (nearestBeanX - x) * attraction
 
                 let dotRect = CGRect(
@@ -515,7 +569,7 @@ struct MetronomePendulumView: View {
                 }
                 context.fill(dotShape, with: .color(.white.opacity(Double(dotAppear))))
                 // Подлетая к бобу, точка окрашивается в цвет ближайшего удара
-                let mergeTint = Double(morph) * 0.85
+                let mergeTint = Double(effectiveMorph) * 0.85
                 if mergeTint > 0.01 {
                     context.fill(
                         dotShape,
@@ -527,3 +581,4 @@ struct MetronomePendulumView: View {
         .allowsHitTesting(false)
     }
 }
+

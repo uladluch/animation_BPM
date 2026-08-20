@@ -19,6 +19,7 @@ private struct Ripple: Identifiable {
 struct ContentView: View {
     /// Пользователь предпочитает уменьшенное движение — заменяем волну и масштабы фейдами
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
 
     /// Текущее (последнее вычисленное) значение BPM
     @State private var bpm = 119
@@ -48,6 +49,10 @@ struct ContentView: View {
     @State private var isSettling = false
     /// Фокус-режим: чёрный экран, звучит только метроном
     @State private var isFocusMode = false
+    /// Положение индикаторов в фокус-режиме (сверху/снизу)
+    @State private var focusIndicatorsOnTop = false
+    /// Focus Mode 3: всегда показывать подсказку выхода
+    @State private var alwaysShowExitHint = false
     /// Задача-цикл метронома
     @State private var metronomeTask: Task<Void, Never>?
     /// Момент старта метронома — от него считаются и звук, и анимация маятника
@@ -59,8 +64,8 @@ struct ContentView: View {
     /// Прогресс удержания для выхода из фокус-режима (0…1):
     /// пока палец держит — экран темнеет и метроном сжимается
     @State private var exitHoldProgress: Double = 0
-    /// Выбранный музыкальный размер
-    @State private var timeSignature: TimeSignature = .fourFour
+    /// Выбранный ритмический пресет (размер или экспериментальный рисунок)
+    @State private var rhythmPreset: RhythmPreset = .experimental
 
     /// Пауза, после которой считаем, что пользователь закончил настукивать
     private let sessionTimeout: TimeInterval = 2.0
@@ -104,55 +109,64 @@ struct ContentView: View {
     var body: some View {
         ZStack {
             if isFocusMode {
-                // Фокус-режим: чёрный экран и круговой метроном.
-                // Тап показывает подсказку, долгое нажатие — выход.
-                ZStack {
-                    // Полотно метронома игнорирует safe area целиком, снаружи
-                    // от scaleEffect — иначе трансформация вызывает пересчёт
-                    // safe area и контент прыгает
+                GeometryReader { geo in
                     ZStack {
-                        Color.black
-                        // Вспышка — отдельный слой: не сжимается при удержании
-                        MetronomeFlashView(
-                            startDate: metronomeStartDate ?? Date(),
-                            bpm: bpm,
-                            signature: timeSignature
-                        )
-                        MetronomePendulumView(
-                            startDate: metronomeStartDate ?? Date(),
-                            bpm: bpm,
-                            signature: timeSignature
-                        )
-                        // Хореография выхода: пока палец держит, метроном сжимается
-                        // и темнеет; отпустил раньше — упруго возвращается
-                        .scaleEffect(1 - 0.12 * exitHoldProgress)
-                        .opacity(1 - 0.55 * exitHoldProgress)
-                    }
-                    .ignoresSafeArea()
-                    VStack {
-                        Spacer()
-                        Text("Touch and hold to exit")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.5))
-                            .padding(.bottom, 24)
-                            .opacity(showExitHint || exitHoldProgress > 0.1 ? 1 : 0)
-                    }
-                }
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    showExitHintBriefly()
-                }
-                .onLongPressGesture(minimumDuration: 0.9) {
-                    exitFocusMode()
-                } onPressingChanged: { pressing in
-                    if pressing {
-                        withAnimation(.linear(duration: 0.9)) {
-                            exitHoldProgress = 1
+                        // Полотно метронома игнорирует safe area целиком, снаружи
+                        // от scaleEffect — иначе трансформация вызывает пересчёт
+                        // safe area и контент прыгает
+                        ZStack {
+                            Color.black
+                            // Вспышка — отдельный слой: не сжимается при удержании
+                            MetronomeFlashView(
+                                startDate: metronomeStartDate ?? Date(),
+                                bpm: bpm,
+                                pattern: rhythmPreset.pattern
+                            )
+                            // Для Focus Mode 3 (индикаторы сверху + постоянная подсказка)
+                            // поднимаем ряд индикаторов выше: отступ сверху равен
+                            // отступу снизу до подсказки (24pt) с поправкой на половину высоты мини-боба
+                            let topIndicatorYOverride: CGFloat? = (alwaysShowExitHint && focusIndicatorsOnTop)
+                                ? (geo.safeAreaInsets.top + 24 + 11)
+                                : nil
+                            MetronomePendulumView(
+                                startDate: metronomeStartDate ?? Date(),
+                                bpm: bpm,
+                                pattern: rhythmPreset.pattern,
+                                indicatorsOnTop: focusIndicatorsOnTop,
+                                topIndicatorY: topIndicatorYOverride
+                            )
+                            // Хореография выхода: пока палец держит, метроном сжимается
+                            // и темнеет; отпустил раньше — упруго возвращается
+                            .scaleEffect(1 - 0.12 * exitHoldProgress)
+                            .opacity(1 - 0.55 * exitHoldProgress)
                         }
-                    } else if isFocusMode {
-                        // Отпустил раньше времени — отпружиниваем обратно
-                        withAnimation(.spring(duration: 0.45, bounce: 0.3)) {
-                            exitHoldProgress = 0
+                        .ignoresSafeArea()
+                        VStack {
+                            Spacer()
+                            Text("Touch and hold to exit")
+                                .font(.system(size: 13, weight: .medium))
+                                // Чуть тусклее в покое, ярче при касании/удержании
+                                .foregroundStyle(.white.opacity(min(0.8, 0.30 + 0.35 * exitHoldProgress + (showExitHint ? 0.15 : 0))))
+                                .padding(.bottom, 24)
+                                .opacity((alwaysShowExitHint || showExitHint || exitHoldProgress > 0.1) ? 1 : 0)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        showExitHintBriefly()
+                    }
+                    .onLongPressGesture(minimumDuration: 0.9) {
+                        exitFocusMode()
+                    } onPressingChanged: { pressing in
+                        if pressing {
+                            withAnimation(.linear(duration: 0.9)) {
+                                exitHoldProgress = 1
+                            }
+                        } else if isFocusMode {
+                            // Отпустил раньше времени — отпружиниваем обратно
+                            withAnimation(.spring(duration: 0.45, bounce: 0.3)) {
+                                exitHoldProgress = 0
+                            }
                         }
                     }
                 }
@@ -161,28 +175,28 @@ struct ContentView: View {
                 VStack(spacing: 48) {
                     bpmBlock
 
-                    VStack(spacing: 16) {
-                        // Выбор размера — нативное системное меню
+                    // Две фиксированные кнопки: выбор ритма (меню) и запуск Focus Mode
+                    VStack(spacing: 12) {
+                        // Кнопка-меню выбора ритма (по тапу всплывает меню)
                         Menu {
-                            Picker("Time Signature", selection: $timeSignature) {
-                                ForEach(TimeSignature.allCases) { signature in
-                                    Text(signature.rawValue).tag(signature)
+                            Picker("Rhythm", selection: $rhythmPreset) {
+                                ForEach(RhythmPreset.allCases) { preset in
+                                    Text(preset.rawValue).tag(preset)
                                 }
                             }
                         } label: {
-                            Text(timeSignature.rawValue)
-                                .font(.system(size: 15, weight: .medium))
-                                .padding(.horizontal, 8)
+                            Text(rhythmPreset.rawValue)
+                                .font(.system(size: 16, weight: .semibold))
+                                .frame(width: 180, height: 48)
                         }
                         .buttonStyle(.glass(.clear))
 
-                        // Системная кнопка в прозрачном Liquid Glass
                         Button {
-                            enterFocusMode()
+                            enterFocusMode(indicatorsOnTop: true, alwaysShowHint: true)
                         } label: {
                             Text("Focus Mode")
-                                .font(.system(size: 15, weight: .medium))
-                                .padding(.horizontal, 8)
+                                .font(.system(size: 16, weight: .semibold))
+                                .frame(width: 180, height: 48)
                         }
                         .buttonStyle(.glass(.clear))
                     }
@@ -194,14 +208,35 @@ struct ContentView: View {
         .statusBarHidden(isFocusMode)
         // Тактильная точка входа и выхода из фокус-режима
         .sensoryFeedback(.impact(flexibility: .solid, intensity: 0.8), trigger: isFocusMode)
+        .onAppear {
+            // Страховка: при появлении синхронизируем состояние блокировки экрана
+            UIApplication.shared.isIdleTimerDisabled = isFocusMode
+        }
+        .onChange(of: isFocusMode) { enabled in
+            // Экран не должен гаснуть в фокус-режиме
+            UIApplication.shared.isIdleTimerDisabled = enabled
+        }
+        .onChange(of: scenePhase) { phase in
+            // При возврате в активное состояние повторно применяем политику
+            switch phase {
+            case .active:
+                UIApplication.shared.isIdleTimerDisabled = isFocusMode
+            default:
+                // В фоне/неактивном состоянии разблокируем, чтобы не держать зря
+                UIApplication.shared.isIdleTimerDisabled = false
+            }
+        }
     }
 
     /// Входим в фокус-режим: прячем интерфейс и запускаем метроном
-    private func enterFocusMode() {
+    private func enterFocusMode(indicatorsOnTop: Bool, alwaysShowHint: Bool = false) {
         sessionEndTask?.cancel()
         breatheTask?.cancel()
         // Экран не должен гаснуть посреди практики
         UIApplication.shared.isIdleTimerDisabled = true
+        // Позиция индикаторов в этом запуске фокус-режима
+        focusIndicatorsOnTop = indicatorsOnTop
+        alwaysShowExitHint = alwaysShowHint
         withAnimation(.smooth(duration: 0.5)) {
             isFocusMode = true
             // Сбрасываем визуальные состояния компонента, чтобы после выхода он был «спящим»
@@ -235,6 +270,7 @@ struct ContentView: View {
         metronomeStartDate = nil
         exitHintTask?.cancel()
         showExitHint = false
+        alwaysShowExitHint = false
         UIApplication.shared.isIdleTimerDisabled = false
         withAnimation(.smooth(duration: 0.5)) {
             isFocusMode = false
@@ -242,19 +278,30 @@ struct ContentView: View {
         exitHoldProgress = 0
     }
 
-    /// Метроном: системный щелчок в темпе пользователя.
-    /// Каждый следующий удар планируем от точки старта — без накопления дрейфа.
+    /// Метроном: щелчки в темпе пользователя по ритмическому рисунку —
+    /// звук следует иерархии акцентов, как и вспышки: mute молчит,
+    /// слабый глуше, сильный звонче (демо на системных звуках,
+    /// на проде заменятся своими). Каждый следующий удар планируем
+    /// от точки старта — без накопления дрейфа.
     private func startMetronome() {
         metronomeTask?.cancel()
         let start = Date()
         metronomeStartDate = start
+        let pattern = rhythmPreset.pattern
         metronomeTask = Task {
             let interval = 60.0 / Double(bpm)
             var beat = 0
-            // Точка стартует с верхнего боба — щелчки на целых тактах,
-            // в моменты касания бобов
+            // Точка стартует с левого боба — щелчки в моменты касания бобов
             while !Task.isCancelled {
-                AudioServicesPlaySystemSound(1104) // системный «Tock»
+                let clickID: SystemSoundID? = switch pattern[beat % pattern.count].accent {
+                case .mute: nil       // пауза — тишина
+                case .weak: 1105      // глухой низкий щелчок
+                case .medium: 1104    // обычный «Tock»
+                case .strong: 1103    // звонкий акцентный «Tink»
+                }
+                if let clickID {
+                    AudioServicesPlaySystemSound(clickID)
+                }
                 beat += 1
                 let next = start.addingTimeInterval(Double(beat) * interval)
                 let delay = next.timeIntervalSinceNow
