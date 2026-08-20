@@ -148,7 +148,6 @@ struct MetronomePendulumView: View {
                 let sinceHit = t.truncatingRemainder(dividingBy: interval)
 
                 let beats = signature.beatsPerBar
-                let accents = signature.accentBeats
 
                 let midY = PendulumGeometry.midY(size)
                 let beanWidth = PendulumGeometry.beanWidth
@@ -170,41 +169,25 @@ struct MetronomePendulumView: View {
                 // Мгновенная скорость (0 у бобов, максимум в середине пролёта)
                 let speed = sin(.pi * phase)
 
-                // Короткая тёмная линия по центру. На первом пролёте точка
-                // «рисует» её за собой; пролетая, точка вселяется в линию
-                // и бежит по ней световым импульсом
-                let lineHalfLength: CGFloat = 32
-                let lineStart = centerX - lineHalfLength
-                let lineEnd = centerX + lineHalfLength
-                let revealedEnd = t < interval
-                    ? min(lineEnd, x)
-                    : lineEnd
-                if revealedEnd > lineStart {
-                    var line = Path()
-                    line.move(to: CGPoint(x: lineStart, y: midY))
-                    line.addLine(to: CGPoint(x: revealedEnd, y: midY))
-                    context.stroke(line, with: .color(.white.opacity(0.15)), lineWidth: 1.5)
-                }
+                // Позиция в такте
+                let currentBeat = beatIndex % beats
+                let barDuration = interval * Double(beats)
+                let barIndex = Int(t / barDuration)
 
-                // Насколько точка «внутри» линии: 0 снаружи, 1 в глубине
-                // (мягкие края по 24pt, чтобы вход и выход были плавными)
-                let depthInLine = min(x - lineStart, lineEnd - x)
-                let linePossession = smooth(Double(depthInLine) / 24)
-
-                // Линия светится под точкой — бегущий по ней световой след
-                if linePossession > 0.01 {
-                    let glowStart = max(lineStart, x - 18)
-                    let glowEnd = min(revealedEnd, x + 18)
-                    if glowEnd > glowStart {
-                        var glowSegment = Path()
-                        glowSegment.move(to: CGPoint(x: glowStart, y: midY))
-                        glowSegment.addLine(to: CGPoint(x: glowEnd, y: midY))
-                        context.stroke(
-                            glowSegment,
-                            with: .color(.white.opacity(0.5 * linePossession)),
-                            lineWidth: 2
-                        )
-                    }
+                // «Температура» сцены: каждый удар оставляет в бобах остаточное
+                // свечение — ступенькой ярче с каждой долей. К концу такта бобы
+                // тлеют, а на сильной доле сбрасываются в серый с «выдохом».
+                let barHeat: Double
+                if beats <= 1 {
+                    barHeat = 0
+                } else if currentBeat == 0 {
+                    // Выдох на сильной доле: накопленный накал плавно отпускается.
+                    // В самом первом такте копить ещё нечего — остаёмся холодными.
+                    barHeat = barIndex == 0 ? 0 : 1 - smooth(sinceHit / 0.55)
+                } else {
+                    // Очередной удар добавляет ступеньку тепла (с мягким фронтом)
+                    let step = 1.0 / Double(beats - 1)
+                    barHeat = (Double(currentBeat - 1) + smooth(sinceHit / 0.25)) * step
                 }
 
                 // Бобы по краям: рождаются при первом ударе точки,
@@ -260,17 +243,16 @@ struct MetronomePendulumView: View {
                         width: width, height: height
                     )
                     let bean = Path(roundedRect: rect, cornerRadius: min(width, height) / 2)
-                    // Серый боб загорается белым по мере приближения точки
-                    let brightness = 0.22 + 0.78 * pow(proximity, 1.6)
+                    // Базовый серый теплеет с каждым ударом такта,
+                    // а при приближении точки боб разгорается до белого
+                    let base = 0.22 + 0.3 * barHeat
+                    let brightness = base + (1 - base) * pow(proximity, 1.6)
                     context.fill(bean, with: .color(.white.opacity(brightness * appear)))
                 }
 
                 // Счёт тактов над маятником: цифра меняется раз в такт
                 // (на сильной доле) и идёт по кругу до размера —
                 // для 4/4: такт 1, 2, 3, 4 → снова 1
-                let currentBeat = beatIndex % beats
-                let barDuration = interval * Double(beats)
-                let barIndex = Int(t / barDuration)
                 let barNumber = barIndex % beats + 1
                 let sinceBarStart = t - Double(barIndex) * barDuration
                 let barPhase = sinceBarStart / barDuration
@@ -288,35 +270,6 @@ struct MetronomePendulumView: View {
                             .font(.system(size: 64, weight: .thin))
                             .foregroundStyle(.white),
                         at: .zero
-                    )
-                }
-
-                // Точки-доли такта под маятником: текущая горит и остывает,
-                // сильные доли крупнее. Рождаются по одной на первом такте.
-                let indicatorSpacing: CGFloat = beats > 8 ? 16 : 22
-                let indicatorY = midY + 64
-                let rowWidth = indicatorSpacing * CGFloat(beats - 1)
-                for beat in 0..<beats {
-                    let bornTime = Double(beat) * interval
-                    let indicatorAppear = smooth((t - bornTime) / 0.35)
-                    guard indicatorAppear > 0.001 else { continue }
-
-                    let isAccent = accents.contains(beat)
-                    var brightness = isAccent ? 0.4 : 0.25
-                    var indicatorRadius: CGFloat = isAccent ? 4.5 : 3
-                    if beat == currentBeat {
-                        let heat = exp(-sinceHit / 0.35)
-                        brightness = min(1, brightness + 0.6 * heat + 0.15)
-                        indicatorRadius += CGFloat(1.2 * heat)
-                    }
-                    let indicatorX = centerX - rowWidth / 2 + indicatorSpacing * CGFloat(beat)
-                    let indicatorRect = CGRect(
-                        x: indicatorX - indicatorRadius, y: indicatorY - indicatorRadius,
-                        width: indicatorRadius * 2, height: indicatorRadius * 2
-                    )
-                    context.fill(
-                        Path(ellipseIn: indicatorRect),
-                        with: .color(.white.opacity(brightness * indicatorAppear))
                     )
                 }
 
@@ -361,12 +314,6 @@ struct MetronomePendulumView: View {
                 dotWidth += (targetWidth - dotWidth) * morph
                 dotHeight += (targetHeight - dotHeight) * morph
 
-                // «Вселение» в линию: над ней точка сплющивается в световой
-                // импульс, бегущий внутри, а на выходе восстанавливает форму
-                let lineMorph = CGFloat(linePossession) * (1 - morph)
-                dotWidth += (34 - dotWidth) * lineMorph
-                dotHeight += (7 - dotHeight) * lineMorph
-
                 let attraction = morph * morph
                 let dotCenterX = x + (nearestBeanX - x) * attraction
 
@@ -376,10 +323,9 @@ struct MetronomePendulumView: View {
                 )
                 let dotCornerRadius = min(dotWidth, dotHeight) / 2
 
-                // Свечение дышит в ритм: вспыхивает на ударе, успокаивается в полёте,
-                // а внутри линии частично передаётся ей
+                // Свечение дышит в ритм: вспыхивает на ударе, успокаивается в полёте
                 let glowPulse = exp(-sinceHit / 0.15)
-                let glowOpacity = (0.6 + 0.35 * glowPulse) * dotAppear * (1 - 0.3 * Double(lineMorph))
+                let glowOpacity = (0.6 + 0.35 * glowPulse) * dotAppear
                 let glowInset = -10 - CGFloat(glowPulse) * 4
                 context.drawLayer { layer in
                     layer.addFilter(.blur(radius: 16))
