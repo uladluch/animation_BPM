@@ -4,14 +4,15 @@
 //
 //  Created by Ulad Luch on 19/08/2026.
 //
-//  Круговой метроном фокус-режима: модель музыкального размера,
-//  полноэкранная вспышка удара и «живая» анимация орбиты с точкой.
+//  Метроном фокус-режима: классический маятник — светящаяся точка ездит
+//  слева направо между двумя бобами, одна доля = один пролёт.
+//  Под маятником — ряд точек-долей выбранного размера, над ним — номер такта.
 //
 
 import SwiftUI
 
-/// Музыкальный размер: определяет число долей на орбите метронома,
-/// акцентные доли и плотность делений между кругами
+/// Музыкальный размер: определяет число долей в такте,
+/// акцентные доли и плотность делений на линии маятника
 enum TimeSignature: String, CaseIterable, Identifiable {
     case fourFour = "4/4"
     case threeFour = "3/4"
@@ -21,7 +22,7 @@ enum TimeSignature: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    /// Число долей в такте — столько кругов на орбите
+    /// Число долей в такте
     var beatsPerBar: Int {
         switch self {
         case .fourFour: 4
@@ -41,20 +42,23 @@ enum TimeSignature: String, CaseIterable, Identifiable {
         case .twelveEight: [0, 3, 6, 9]
         }
     }
-
-    /// Кружков-делений между соседними долями
-    var ticksPerGap: Int {
-        switch self {
-        case .fourFour, .threeFour, .twoFour: 3
-        case .sixEight: 2
-        case .twelveEight: 1
-        }
-    }
 }
 
+/// Общая геометрия маятника — одна для метронома и вспышки,
+/// чтобы источник света совпадал с бобом удара
+private enum PendulumGeometry {
+    /// Бобы по краям — вертикальные капсулы, главный визуальный акцент
+    static let beanWidth: CGFloat = 48
+    static let beanHeight: CGFloat = 90
+    static let margin: CGFloat = 62
+
+    static func leftX(_ size: CGSize) -> CGFloat { margin + beanWidth / 2 }
+    static func rightX(_ size: CGSize) -> CGFloat { size.width - margin - beanWidth / 2 }
+    static func midY(_ size: CGSize) -> CGFloat { size.height / 2 }
+}
 
 /// Полноэкранная вспышка удара — отдельный слой, чтобы не сжиматься вместе
-/// с метрономом при удержании для выхода. Свет расходится радиально от круга,
+/// с метрономом при удержании для выхода. Свет расходится радиально от боба,
 /// в который только что ударила точка; сильная доля ярче. На быстрых темпах
 /// и при Reduce Motion / Dim Flashing Lights приглушается.
 struct MetronomeFlashView: View {
@@ -78,17 +82,13 @@ struct MetronomeFlashView: View {
                 let sinceHit = t.truncatingRemainder(dividingBy: interval)
                 let beatIndex = Int(t / interval)
 
-                // Та же геометрия, что у метронома — вспышка исходит из круга удара
-                let center = CGPoint(x: size.width / 2, y: size.height / 2)
-                let radius = min(size.width, size.height) / 2 - 42
-                let beats = signature.beatsPerBar
-                let currentBeat = beatIndex % beats
-                let beatAngle = -Double.pi / 2 + Double(currentBeat) * 2 * .pi / Double(beats)
-                let hitCenter = CGPoint(
-                    x: center.x + radius * CGFloat(cos(beatAngle)),
-                    y: center.y + radius * CGFloat(sin(beatAngle))
-                )
+                // Удар по чётным долям приходится в левый боб, по нечётным — в правый
+                let hitX = beatIndex % 2 == 0
+                    ? PendulumGeometry.leftX(size)
+                    : PendulumGeometry.rightX(size)
+                let hitCenter = CGPoint(x: hitX, y: PendulumGeometry.midY(size))
 
+                let currentBeat = beatIndex % signature.beatsPerBar
                 let isAccentHit = signature.accentBeats.contains(currentBeat)
                 let tempoDim = 0.35 + 0.65 * min(1, interval / 0.5)
                 let calmFactor = (reduceMotion || dimFlashingLights) ? 0.12 : 1.0
@@ -115,17 +115,17 @@ struct MetronomeFlashView: View {
     }
 }
 
-
-/// Метроном фокус-режима: контурные круги долей такта на орбите (по числу долей
-/// выбранного размера), светящаяся точка бегает по кругу, вливаясь в очередной
-/// круг на каждый удар. Сильные доли — акцентные круги.
+/// Маятник фокус-режима: точка ездит между двумя бобами (одна доля — один
+/// пролёт), под линией — точки-доли такта, над линией — номер такта.
 ///
 /// Живая хореография в стиле Apple:
-/// — материализация элементов при входе (каскадное появление),
+/// — на первом такте точка «рисует» маятник: бобы и деления рождаются
+///   в момент, когда она их впервые проходит,
 /// — squash & stretch точки в полёте (вытягивается по ходу движения),
-/// — отклик круга на удар: пружинный пульс + расходящаяся ударная волна,
-/// — комета-шлейф за точкой на скорости,
-/// — свечение «дышит» в ритм, сильная доля ярче.
+/// — бобы замечают точку заранее и тянутся ей навстречу ближним краем,
+/// — при слиянии точка и боб становятся одной каплей, пружинный пульс на ударе,
+/// — точка «вселяется» в кружки-деления и выпрыгивает из них,
+/// — комета-шлейф на скорости, свечение «дышит» в ритм.
 struct MetronomePendulumView: View {
     let startDate: Date
     let bpm: Int
@@ -143,288 +143,256 @@ struct MetronomePendulumView: View {
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 60)) { timeline in
             Canvas { context, size in
-                    let interval = 60.0 / Double(max(bpm, 1))
-                    let t = max(0, timeline.date.timeIntervalSince(startDate))
-                    let sinceHit = t.truncatingRemainder(dividingBy: interval)
+                let interval = 60.0 / Double(max(bpm, 1))
+                let t = max(0, timeline.date.timeIntervalSince(startDate))
+                let sinceHit = t.truncatingRemainder(dividingBy: interval)
 
-                    let center = CGPoint(x: size.width / 2, y: size.height / 2)
-                    let radius = min(size.width, size.height) / 2 - 42
+                let beats = signature.beatsPerBar
+                let accents = signature.accentBeats
 
-                    // Геометрия размера: доли такта — круги на орбите,
-                    // сильные доли акцентные (крупнее)
-                    let beats = signature.beatsPerBar
-                    let accents = signature.accentBeats
-                    let anglePerBeat = 2 * Double.pi / Double(beats)
-                    let beanRadii: [CGFloat] = (0..<beats).map { accents.contains($0) ? 19 : 16 }
-                    let beanAngles: [Double] = (0..<beats).map { -Double.pi / 2 + Double($0) * anglePerBeat }
-                    let beanCenters: [CGPoint] = beanAngles.map {
-                        CGPoint(
-                            x: center.x + radius * CGFloat(cos($0)),
-                            y: center.y + radius * CGFloat(sin($0))
+                let midY = PendulumGeometry.midY(size)
+                let beanWidth = PendulumGeometry.beanWidth
+                let beanHeight = PendulumGeometry.beanHeight
+                let leftX = PendulumGeometry.leftX(size)
+                let rightX = PendulumGeometry.rightX(size)
+                let span = rightX - leftX
+                let centerX = size.width / 2
+
+                // Движение: одна доля — один пролёт, чётные доли бьют в левый боб.
+                // Косинусное сглаживание: у бобов точка замедляется, как маятник.
+                let beatIndex = Int(t / interval)
+                let phase = (t - Double(beatIndex) * interval) / interval
+                let eased = 0.5 - 0.5 * cos(.pi * phase)
+                let movingRight = beatIndex % 2 == 0
+                let x = movingRight
+                    ? leftX + span * CGFloat(eased)
+                    : rightX - span * CGFloat(eased)
+                // Мгновенная скорость (0 у бобов, максимум в середине пролёта)
+                let speed = sin(.pi * phase)
+
+                // Короткая тёмная линия по центру. На первом пролёте точка
+                // «рисует» её за собой; пролетая, точка вселяется в линию
+                // и бежит по ней световым импульсом
+                let lineHalfLength: CGFloat = 32
+                let lineStart = centerX - lineHalfLength
+                let lineEnd = centerX + lineHalfLength
+                let revealedEnd = t < interval
+                    ? min(lineEnd, x)
+                    : lineEnd
+                if revealedEnd > lineStart {
+                    var line = Path()
+                    line.move(to: CGPoint(x: lineStart, y: midY))
+                    line.addLine(to: CGPoint(x: revealedEnd, y: midY))
+                    context.stroke(line, with: .color(.white.opacity(0.15)), lineWidth: 1.5)
+                }
+
+                // Насколько точка «внутри» линии: 0 снаружи, 1 в глубине
+                // (мягкие края по 24pt, чтобы вход и выход были плавными)
+                let depthInLine = min(x - lineStart, lineEnd - x)
+                let linePossession = smooth(Double(depthInLine) / 24)
+
+                // Линия светится под точкой — бегущий по ней световой след
+                if linePossession > 0.01 {
+                    let glowStart = max(lineStart, x - 18)
+                    let glowEnd = min(revealedEnd, x + 18)
+                    if glowEnd > glowStart {
+                        var glowSegment = Path()
+                        glowSegment.move(to: CGPoint(x: glowStart, y: midY))
+                        glowSegment.addLine(to: CGPoint(x: glowEnd, y: midY))
+                        context.stroke(
+                            glowSegment,
+                            with: .color(.white.opacity(0.5 * linePossession)),
+                            lineWidth: 2
                         )
                     }
+                }
 
-                    // Точка бежит по кругу: одна дуга между долями за удар,
-                    // старт с верхнего круга, у кругов замедляется
-                    let beatIndex = Int(t / interval)
-                    let phase = (t - Double(beatIndex) * interval) / interval
-                    let eased = 0.5 - 0.5 * cos(.pi * phase)
-                    let angle = -Double.pi / 2 + (Double(beatIndex) + eased) * anglePerBeat
-                    // Мгновенная скорость (0 у кругов, максимум на середине дуги)
-                    let speed = sin(.pi * phase)
-                    let dotPos = CGPoint(
-                        x: center.x + radius * CGFloat(cos(angle)),
-                        y: center.y + radius * CGFloat(sin(angle))
+                // Бобы по краям: рождаются при первом ударе точки,
+                // тянутся ей навстречу и вытягиваются в каплю при слиянии
+                let meltRange: CGFloat = 60
+                var nearestBeanX = leftX
+                var nearestDistance = CGFloat.infinity
+                for side in 0..<2 {
+                    let beanX = side == 0 ? leftX : rightX
+                    let distance = abs(x - beanX)
+                    if distance < nearestDistance {
+                        nearestDistance = distance
+                        nearestBeanX = beanX
+                    }
+
+                    // Левый боб рождается на первом ударе (t = 0),
+                    // правый — когда точка впервые доезжает до него
+                    let bornTime = side == 0 ? 0 : interval
+                    let appear = smooth((t - bornTime) / 0.4)
+                    guard appear > 0.001 else { continue }
+
+                    // Последний удар по этому бобу (левый бьётся на чётных долях)
+                    let beatsSinceOwnHit = ((beatIndex - side) % 2 + 2) % 2
+                    let lastOwnHitBeat = beatIndex - beatsSinceOwnHit
+                    let sinceOwnHit = t - Double(lastOwnHitBeat) * interval
+                    let wasHit = lastOwnHitBeat >= 0
+                    // Пружинный пульс: подскок и затухающее колебание
+                    let pulse = wasHit
+                        ? exp(-sinceOwnHit / 0.16) * cos(sinceOwnHit * 18) * 0.14
+                        : 0
+
+                    let scale = CGFloat(appear * (1 + pulse))
+                    let proximity = max(0, 1 - distance / meltRange)
+
+                    // Предвкушение: боб замечает точку заранее (радиус 100pt)
+                    // и начинает раздуваться ещё до её прибытия — сильнее вширь,
+                    // чуть-чуть в рост
+                    let reach = max(0, 1 - Double(distance) / 100)
+                    let inflate = CGFloat(pow(reach, 1.6))
+                    let width = beanWidth * (1 + 0.55 * inflate) * scale
+                    let height = beanHeight * (1 + 0.18 * inflate) * scale
+
+                    // …и подаётся навстречу точке: прирост ширины уходит
+                    // в ближний к ней край, а когда точка входит в центр —
+                    // боб выравнивается
+                    let dotAlong = x - beanX
+                    let direction = max(-1, min(1, dotAlong / 24))
+                    let extraWidth = width - beanWidth * scale
+                    let reachOffset = direction * 0.42 * extraWidth
+
+                    let rect = CGRect(
+                        x: beanX + reachOffset - width / 2, y: midY - height / 2,
+                        width: width, height: height
                     )
+                    let bean = Path(roundedRect: rect, cornerRadius: min(width, height) / 2)
+                    // Серый боб загорается белым по мере приближения точки
+                    let brightness = 0.22 + 0.78 * pow(proximity, 1.6)
+                    context.fill(bean, with: .color(.white.opacity(brightness * appear)))
+                }
 
-                    // Кружки-деления между долями; плотность зависит от размера.
-                    // На первом круге точка «рисует» контур: каждый кружок рождается
-                    // ровно в момент, когда она его проходит (с учётом косинусного
-                    // сглаживания дуги). Подсвечиваются, когда точка пролетает мимо.
-                    let slotsPerGap = signature.ticksPerGap + 1
-                    let tickSlots = beats * slotsPerGap
-                    for tick in 0..<tickSlots where tick % slotsPerGap != 0 {
-                        // Момент пролёта: доля + фаза внутри дуги (обратная easing-кривой)
-                        let gapIndex = Double(tick / slotsPerGap)
-                        let fraction = Double(tick % slotsPerGap) / Double(slotsPerGap)
-                        let phaseAtTick = acos(1 - 2 * fraction) / .pi
-                        let bornTime = (gapIndex + phaseAtTick) * interval
-                        let tickAppear = smooth((t - bornTime) / 0.35)
-                        guard tickAppear > 0.001 else { continue }
-
-                        let tickAngle = -Double.pi / 2 + Double(tick) * 2 * .pi / Double(tickSlots)
-                        let tickPos = CGPoint(
-                            x: center.x + radius * CGFloat(cos(tickAngle)),
-                            y: center.y + radius * CGFloat(sin(tickAngle))
-                        )
-                        let tickDistance = hypot(dotPos.x - tickPos.x, dotPos.y - tickPos.y)
-                        let glow = max(0, 1 - tickDistance / 34)
-                        // «Вселение»: когда точка ныряет внутрь, кружок раздувается,
-                        // принимая её свет, и сдувается, когда она выпрыгивает
-                        let swallow = max(0, 1 - tickDistance / 26)
-                        let tickRadius = (2 + 1.2 * glow + 5.5 * swallow * swallow) * tickAppear
-                        let tickRect = CGRect(
-                            x: tickPos.x - tickRadius, y: tickPos.y - tickRadius,
-                            width: tickRadius * 2, height: tickRadius * 2
-                        )
-                        context.fill(
-                            Path(ellipseIn: tickRect),
-                            with: .color(.white.opacity(
-                                min(0.95, 0.18 + 0.5 * glow + 0.35 * swallow) * tickAppear
-                            ))
-                        )
-                    }
-
-                    let meltRange: CGFloat = 60
-
-                    // Круги: каскадная материализация, налив при подъезде точки,
-                    // пружинный пульс и ударная волна в момент попадания
-                    var nearestIndex = 0
-                    var nearestDistance = CGFloat.infinity
-                    for index in 0..<beats {
-                        let beanCenter = beanCenters[index]
-                        let distance = hypot(dotPos.x - beanCenter.x, dotPos.y - beanCenter.y)
-                        if distance < nearestDistance {
-                            nearestDistance = distance
-                            nearestIndex = index
-                        }
-
-                        // Круг доли рождается в момент, когда точка впервые
-                        // доезжает до него — точка «рисует» контур на первом круге
-                        let bornTime = Double(index) * interval
-                        let appear = smooth((t - bornTime) / 0.4)
-                        guard appear > 0.001 else { continue }
-
-                        // Последний удар по этому кругу (круг index бьётся на долях index, index+beats, ...)
-                        let beatsSinceOwnHit = ((beatIndex - index) % beats + beats) % beats
-                        let lastOwnHitBeat = beatIndex - beatsSinceOwnHit
-                        let sinceOwnHit = t - Double(lastOwnHitBeat) * interval
-                        let wasHit = lastOwnHitBeat >= 0
-                        // Пружинный пульс: подскок и затухающее колебание
-                        let pulse = wasHit
-                            ? exp(-sinceOwnHit / 0.16) * cos(sinceOwnHit * 18) * 0.14
-                            : 0
-
-                        let beanRadius = beanRadii[index] * CGFloat(appear * (1 + pulse))
-                        let proximity = max(0, 1 - distance / meltRange)
-
-                        // Предвкушение: круг замечает точку заранее (радиус 100pt)
-                        // и начинает вытягиваться в «боб» ещё до её прибытия
-                        let reach = max(0, 1 - Double(distance) / 100)
-                        let elongation = CGFloat(pow(reach, 1.6))
-                        let length = beanRadius * 2 * (1 + 0.7 * elongation)
-                        let thickness = beanRadius * 2 * (1 - 0.15 * elongation)
-
-                        // …и тянется в первую очередь к точке: почти весь прирост
-                        // длины уходит в ближний к ней край (дальний стоит на месте),
-                        // а когда точка входит в центр — форма выравнивается
-                        let tangentX = -CGFloat(sin(beanAngles[index]))
-                        let tangentY = CGFloat(cos(beanAngles[index]))
-                        let dotAlongTangent = (dotPos.x - beanCenter.x) * tangentX
-                            + (dotPos.y - beanCenter.y) * tangentY
-                        let direction = max(-1, min(1, dotAlongTangent / 24))
-                        let extraLength = length - beanRadius * 2
-                        let reachOffset = direction * 0.42 * extraLength
-
-                        var beanContext = context
-                        beanContext.translateBy(x: beanCenter.x, y: beanCenter.y)
-                        beanContext.rotate(by: Angle(radians: beanAngles[index] + .pi / 2))
-                        let rect = CGRect(
-                            x: reachOffset - length / 2, y: -thickness / 2,
-                            width: length, height: thickness
-                        )
-                        let bean = Path(roundedRect: rect, cornerRadius: min(length, thickness) / 2)
-                        beanContext.stroke(
-                            bean,
-                            with: .color(.white.opacity(0.75 * appear)),
-                            lineWidth: 1.5
-                        )
-                        if proximity > 0.01 {
-                            beanContext.fill(bean, with: .color(.white.opacity(pow(proximity, 1.6) * appear)))
-                        }
-
-                    }
-
-                    // Счёт долей в центре, каждая цифра появляется
-                    // с мягким «попом» на ударе и растворяется к концу доли
-                    let currentBeat = beatIndex % beats
-                    let beatNumber = currentBeat + 1
-                    let isAccentNumber = accents.contains(currentBeat)
-                    let numberAppear = smooth(sinceHit / 0.07)
-                    let numberFade = 1 - smooth((phase - 0.72) / 0.28)
-                    let numberOpacity = numberAppear * numberFade * 0.9
-                    if numberOpacity > 0.01 {
-                        var numberContext = context
-                        let pop = 1 + 0.1 * exp(-sinceHit / 0.15)
-                        numberContext.translateBy(x: center.x, y: center.y)
-                        numberContext.scaleBy(x: pop, y: pop)
-                        numberContext.opacity = numberOpacity
-                        // Сильные доли и глазом весомее: крупнее и плотнее
-                        numberContext.draw(
-                            Text("\(beatNumber)")
-                                .font(.system(
-                                    size: isAccentNumber ? 66 : 60,
-                                    weight: isAccentNumber ? .light : .thin
-                                ))
-                                .foregroundStyle(.white),
-                            at: .zero
-                        )
-                    }
-
-                    // Комета-шлейф: деликатный, чтобы героем оставалась точка;
-                    // при Reduce Motion выключен
-                    if speed > 0.15, !reduceMotion {
-                        for ghost in 1...4 {
-                            let ghostTime = t - Double(ghost) * 0.022
-                            guard ghostTime >= 0 else { break }
-                            let gBeat = Int(ghostTime / interval)
-                            let gPhase = (ghostTime - Double(gBeat) * interval) / interval
-                            let gEased = 0.5 - 0.5 * cos(.pi * gPhase)
-                            let gAngle = -Double.pi / 2 + (Double(gBeat) + gEased) * anglePerBeat
-                            let gRadius = 8 - CGFloat(ghost) * 1.3
-                            let gOpacity = 0.05 * (1 - Double(ghost) / 5) * speed
-                            let gRect = CGRect(
-                                x: center.x + radius * CGFloat(cos(gAngle)) - gRadius,
-                                y: center.y + radius * CGFloat(sin(gAngle)) - gRadius,
-                                width: gRadius * 2, height: gRadius * 2
-                            )
-                            context.fill(Path(ellipseIn: gRect), with: .color(.white.opacity(gOpacity)))
-                        }
-                    }
-
-                    // Точка: материализуется, в полёте вытягивается по ходу движения
-                    // (squash & stretch), у круга вливается в его форму
-                    let dotAppear = smooth(t / 0.45)
-                    guard dotAppear > 0.001 else { return }
-
-                    let targetRadius = beanRadii[nearestIndex]
-                    let morph = max(0, 1 - nearestDistance / meltRange)
-                    let dotDiameter: CGFloat = 22 * CGFloat(0.5 + 0.5 * dotAppear)
-                    // Вытягивание по касательной, объём сохраняется; у кругов гаснет
-                    let stretch = reduceMotion ? 1 : 1 + 0.22 * speed * (1 - morph)
-                    var dotWidth = dotDiameter * CGFloat(stretch)
-                    var dotHeight = dotDiameter / CGFloat(stretch)
-                    // Цель морфа — та же боб-форма, в которую вытягивается круг:
-                    // в системе координат точки ширина идёт вдоль касательной
-                    let targetElongation = CGFloat(pow(morph, 1.3))
-                    let targetLength = targetRadius * 2 * (1 + 0.7 * targetElongation)
-                    let targetThickness = targetRadius * 2 * (1 - 0.15 * targetElongation)
-                    dotWidth += (targetLength - dotWidth) * morph
-                    dotHeight += (targetThickness - dotHeight) * morph
-
-                    // «Вселение» в кружки-деления: пролетая мимо, точка ныряет
-                    // в ближайший кружок — сжимается, отдавая ему свет, — а на
-                    // выходе выпрыгивает с упругим отскоком
-                    var possession: Double = 0
-                    var possessionLeaving = false
-                    var possessedTick = CGPoint.zero
-                    if !reduceMotion {
-                        for tick in 0..<tickSlots where tick % slotsPerGap != 0 {
-                            let tickAngle = -Double.pi / 2 + Double(tick) * 2 * .pi / Double(tickSlots)
-                            let tickPos = CGPoint(
-                                x: center.x + radius * CGFloat(cos(tickAngle)),
-                                y: center.y + radius * CGFloat(sin(tickAngle))
-                            )
-                            let tickDistance = hypot(dotPos.x - tickPos.x, dotPos.y - tickPos.y)
-                            let p = max(0, 1 - Double(tickDistance) / 26)
-                            if p > possession {
-                                possession = p
-                                possessedTick = tickPos
-                                // Кружок уже позади по ходу движения — точка выходит
-                                let angularDiff = atan2(sin(tickAngle - angle), cos(tickAngle - angle))
-                                possessionLeaving = angularDiff < 0
-                            }
-                        }
-                        // Рядом с большими кругами вселение уступает морфу в боб
-                        possession *= Double(1 - morph)
-                    }
-
-                    // Нырок: сжатие до половины; выскок: перелёт с запасом
-                    let dive = 1 - 0.5 * possession
-                    let pop = possessionLeaving ? possession * (1 - possession) * 0.9 : 0
-                    let possessionScale = CGFloat(dive + pop)
-                    dotWidth *= possessionScale
-                    dotHeight *= possessionScale
-
-                    let attraction = morph * morph
-                    var dotCenter = CGPoint(
-                        x: dotPos.x + (beanCenters[nearestIndex].x - dotPos.x) * attraction,
-                        y: dotPos.y + (beanCenters[nearestIndex].y - dotPos.y) * attraction
+                // Счёт тактов над маятником: цифра меняется раз в такт
+                // (на сильной доле) и идёт по кругу до размера —
+                // для 4/4: такт 1, 2, 3, 4 → снова 1
+                let currentBeat = beatIndex % beats
+                let barDuration = interval * Double(beats)
+                let barIndex = Int(t / barDuration)
+                let barNumber = barIndex % beats + 1
+                let sinceBarStart = t - Double(barIndex) * barDuration
+                let barPhase = sinceBarStart / barDuration
+                let numberAppear = smooth(sinceBarStart / 0.07)
+                let numberFade = 1 - smooth((barPhase - 0.85) / 0.15)
+                let numberOpacity = numberAppear * numberFade * 0.9
+                if numberOpacity > 0.01 {
+                    var numberContext = context
+                    let pop = 1 + 0.1 * exp(-sinceBarStart / 0.15)
+                    numberContext.translateBy(x: centerX, y: midY - 120)
+                    numberContext.scaleBy(x: pop, y: pop)
+                    numberContext.opacity = numberOpacity
+                    numberContext.draw(
+                        Text("\(barNumber)")
+                            .font(.system(size: 64, weight: .thin))
+                            .foregroundStyle(.white),
+                        at: .zero
                     )
-                    // Магнитное притяжение к кружку в момент вселения
-                    let pull = CGFloat(possession * possession) * 0.6
-                    dotCenter.x += (possessedTick.x - dotCenter.x) * pull
-                    dotCenter.y += (possessedTick.y - dotCenter.y) * pull
+                }
 
-                    // Рисуем в системе координат точки, повёрнутой по касательной к дуге —
-                    // вытягивание всегда «по ходу полёта»
-                    var dotContext = context
-                    dotContext.translateBy(x: dotCenter.x, y: dotCenter.y)
-                    dotContext.rotate(by: Angle(radians: angle + .pi / 2))
+                // Точки-доли такта под маятником: текущая горит и остывает,
+                // сильные доли крупнее. Рождаются по одной на первом такте.
+                let indicatorSpacing: CGFloat = beats > 8 ? 16 : 22
+                let indicatorY = midY + 64
+                let rowWidth = indicatorSpacing * CGFloat(beats - 1)
+                for beat in 0..<beats {
+                    let bornTime = Double(beat) * interval
+                    let indicatorAppear = smooth((t - bornTime) / 0.35)
+                    guard indicatorAppear > 0.001 else { continue }
 
-                    let dotRect = CGRect(
-                        x: -dotWidth / 2, y: -dotHeight / 2,
-                        width: dotWidth, height: dotHeight
-                    )
-                    let dotCornerRadius = min(dotWidth, dotHeight) / 2
-
-                    // Свечение дышит в ритм: вспыхивает на ударе, успокаивается в полёте,
-                    // а при вселении в кружок частично передаётся ему
-                    let glowPulse = exp(-sinceHit / 0.15)
-                    let glowOpacity = (0.6 + 0.35 * glowPulse) * dotAppear * (1 - 0.35 * possession)
-                    let glowInset = -10 - CGFloat(glowPulse) * 4
-                    dotContext.drawLayer { layer in
-                        layer.addFilter(.blur(radius: 16))
-                        layer.fill(
-                            Path(roundedRect: dotRect.insetBy(dx: glowInset, dy: glowInset),
-                                 cornerRadius: dotCornerRadius - glowInset),
-                            with: .color(.white.opacity(glowOpacity))
-                        )
+                    let isAccent = accents.contains(beat)
+                    var brightness = isAccent ? 0.4 : 0.25
+                    var indicatorRadius: CGFloat = isAccent ? 4.5 : 3
+                    if beat == currentBeat {
+                        let heat = exp(-sinceHit / 0.35)
+                        brightness = min(1, brightness + 0.6 * heat + 0.15)
+                        indicatorRadius += CGFloat(1.2 * heat)
                     }
-                    dotContext.fill(
-                        Path(roundedRect: dotRect, cornerRadius: dotCornerRadius),
-                        with: .color(.white.opacity(Double(dotAppear)))
+                    let indicatorX = centerX - rowWidth / 2 + indicatorSpacing * CGFloat(beat)
+                    let indicatorRect = CGRect(
+                        x: indicatorX - indicatorRadius, y: indicatorY - indicatorRadius,
+                        width: indicatorRadius * 2, height: indicatorRadius * 2
                     )
+                    context.fill(
+                        Path(ellipseIn: indicatorRect),
+                        with: .color(.white.opacity(brightness * indicatorAppear))
+                    )
+                }
+
+                // Комета-шлейф: деликатный, чтобы героем оставалась точка;
+                // при Reduce Motion выключен
+                if speed > 0.15, !reduceMotion {
+                    for ghost in 1...4 {
+                        let ghostTime = t - Double(ghost) * 0.022
+                        guard ghostTime >= 0 else { break }
+                        let gBeat = Int(ghostTime / interval)
+                        let gPhase = (ghostTime - Double(gBeat) * interval) / interval
+                        let gEased = 0.5 - 0.5 * cos(.pi * gPhase)
+                        let gX = gBeat % 2 == 0
+                            ? leftX + span * CGFloat(gEased)
+                            : rightX - span * CGFloat(gEased)
+                        let gRadius = 8 - CGFloat(ghost) * 1.3
+                        let gOpacity = 0.05 * (1 - Double(ghost) / 5) * speed
+                        let gRect = CGRect(
+                            x: gX - gRadius, y: midY - gRadius,
+                            width: gRadius * 2, height: gRadius * 2
+                        )
+                        context.fill(Path(ellipseIn: gRect), with: .color(.white.opacity(gOpacity)))
+                    }
+                }
+
+                // Точка: материализуется, в полёте вытягивается по ходу движения
+                // (squash & stretch), у боба вливается в его форму
+                let dotAppear = smooth(t / 0.45)
+                guard dotAppear > 0.001 else { return }
+
+                let morph = max(0, 1 - nearestDistance / meltRange)
+                let dotDiameter: CGFloat = 22 * CGFloat(0.5 + 0.5 * dotAppear)
+                // Вытягивание по ходу движения, объём сохраняется; у бобов гаснет
+                let stretch = reduceMotion ? 1 : 1 + 0.22 * speed * (1 - morph)
+                var dotWidth = dotDiameter * CGFloat(stretch)
+                var dotHeight = dotDiameter / CGFloat(stretch)
+                // Цель морфа — тот же раздутый вертикальный боб:
+                // в момент слияния формы совпадают один в один
+                let targetInflate = CGFloat(pow(morph, 1.3))
+                let targetWidth = beanWidth * (1 + 0.55 * targetInflate)
+                let targetHeight = beanHeight * (1 + 0.18 * targetInflate)
+                dotWidth += (targetWidth - dotWidth) * morph
+                dotHeight += (targetHeight - dotHeight) * morph
+
+                // «Вселение» в линию: над ней точка сплющивается в световой
+                // импульс, бегущий внутри, а на выходе восстанавливает форму
+                let lineMorph = CGFloat(linePossession) * (1 - morph)
+                dotWidth += (34 - dotWidth) * lineMorph
+                dotHeight += (7 - dotHeight) * lineMorph
+
+                let attraction = morph * morph
+                let dotCenterX = x + (nearestBeanX - x) * attraction
+
+                let dotRect = CGRect(
+                    x: dotCenterX - dotWidth / 2, y: midY - dotHeight / 2,
+                    width: dotWidth, height: dotHeight
+                )
+                let dotCornerRadius = min(dotWidth, dotHeight) / 2
+
+                // Свечение дышит в ритм: вспыхивает на ударе, успокаивается в полёте,
+                // а внутри линии частично передаётся ей
+                let glowPulse = exp(-sinceHit / 0.15)
+                let glowOpacity = (0.6 + 0.35 * glowPulse) * dotAppear * (1 - 0.3 * Double(lineMorph))
+                let glowInset = -10 - CGFloat(glowPulse) * 4
+                context.drawLayer { layer in
+                    layer.addFilter(.blur(radius: 16))
+                    layer.fill(
+                        Path(roundedRect: dotRect.insetBy(dx: glowInset, dy: glowInset),
+                             cornerRadius: dotCornerRadius - glowInset),
+                        with: .color(.white.opacity(glowOpacity))
+                    )
+                }
+                context.fill(
+                    Path(roundedRect: dotRect, cornerRadius: dotCornerRadius),
+                    with: .color(.white.opacity(Double(dotAppear)))
+                )
             }
         }
         .allowsHitTesting(false)
