@@ -9,6 +9,34 @@ import SwiftUI
 import AudioToolbox
 import UIKit
 
+/// Режим счётчика тактов
+enum BarCounterMode: String, CaseIterable, Identifiable {
+    case off = "Off"
+    case byBar = "by bar"
+    case byCounter = "by counter"
+    
+    var id: String { rawValue }
+}
+
+/// Режим отсчёта перед стартом
+enum CountInMode: String, CaseIterable, Identifiable {
+    case off = "Off"
+    case oneBar = "1 bar"
+    case twoBars = "2 bars"
+    case threeBars = "3 bars"
+    
+    var id: String { rawValue }
+    
+    var bars: Int {
+        switch self {
+        case .off: return 0
+        case .oneBar: return 1
+        case .twoBars: return 2
+        case .threeBars: return 3
+        }
+    }
+}
+
 /// Одна волна из точек, расходящаяся от места касания
 private struct Ripple: Identifiable {
     let id = UUID()
@@ -66,6 +94,16 @@ struct ContentView: View {
     @State private var exitHoldProgress: Double = 0
     /// Выбранный ритмический пресет (размер или экспериментальный рисунок)
     @State private var rhythmPreset: RhythmPreset = .experimental
+    
+    /// Показываем ли sheet с настройками
+    @State private var showingSettings = false
+    
+    /// Настройки метронома
+    @State private var flashBrightness: Double = 0.8
+    @State private var countInMode: CountInMode = .off
+    @State private var barCounterMode: BarCounterMode = .off
+    @State private var barCounterBars: Int = 16
+    @State private var barCounterMinutes: Int = 5
 
     /// Пауза, после которой считаем, что пользователь закончил настукивать
     private let sessionTimeout: TimeInterval = 2.0
@@ -120,7 +158,8 @@ struct ContentView: View {
                             MetronomeFlashView(
                                 startDate: metronomeStartDate ?? Date(),
                                 bpm: bpm,
-                                pattern: rhythmPreset.pattern
+                                pattern: rhythmPreset.pattern,
+                                flashBrightness: flashBrightness
                             )
                             // Для Focus Mode 3 (индикаторы сверху + постоянная подсказка)
                             // поднимаем ряд индикаторов выше: отступ сверху равен
@@ -133,7 +172,11 @@ struct ContentView: View {
                                 bpm: bpm,
                                 pattern: rhythmPreset.pattern,
                                 indicatorsOnTop: focusIndicatorsOnTop,
-                                topIndicatorY: topIndicatorYOverride
+                                topIndicatorY: topIndicatorYOverride,
+                                barCounterMode: barCounterMode,
+                                barCounterBars: barCounterBars,
+                                barCounterMinutes: barCounterMinutes,
+                                countInBars: countInMode.bars
                             )
                             // Хореография выхода: пока палец держит, метроном сжимается
                             // и темнеет; отпустил раньше — упруго возвращается
@@ -143,12 +186,72 @@ struct ContentView: View {
                         .ignoresSafeArea()
                         VStack {
                             Spacer()
+                            
+                            // BPM индикатор с кнопками +5/-5 — скрыт во время count-in
+                            // Используем TimelineView для постоянного обновления проверки count-in
+                            TimelineView(.animation(minimumInterval: 0.1)) { timeline in
+                                let isInCountIn: Bool = {
+                                    guard let startDate = metronomeStartDate else { return false }
+                                    let elapsed = timeline.date.timeIntervalSince(startDate)
+                                    let barDuration = 60.0 / Double(bpm) * Double(rhythmPreset.pattern.count)
+                                    let countInDuration = barDuration * Double(countInMode.bars)
+                                    return countInMode.bars > 0 && elapsed < countInDuration
+                                }()
+                                
+                                HStack(spacing: 16) {
+                                    // Кнопка -5
+                                    Button {
+                                        withAnimation(.smooth(duration: 0.25)) {
+                                            bpm = max(20, bpm - 5)
+                                        }
+                                    } label: {
+                                        Text("-5")
+                                            .font(.system(size: 16, weight: .medium))
+                                            .frame(width: 52, height: 36)
+                                    }
+                                    .buttonStyle(.glass(.clear))
+                                    .opacity((showExitHint || exitHoldProgress > 0.1) ? 1 : 0)
+                                    
+                                    // BPM индикатор
+                                    VStack(spacing: 2) {
+                                        Text("\(bpm)")
+                                            .font(.system(size: 27, weight: .medium))
+                                            .foregroundStyle(.white)
+                                        Text("BPM")
+                                            .font(.system(size: 12, weight: .regular))
+                                            .foregroundStyle(.white.opacity(0.5))
+                                    }
+                                    
+                                    // Кнопка +5
+                                    Button {
+                                        withAnimation(.smooth(duration: 0.25)) {
+                                            bpm = min(maxBPM, bpm + 5)
+                                        }
+                                    } label: {
+                                        Text("+5")
+                                            .font(.system(size: 16, weight: .medium))
+                                            .frame(width: 52, height: 36)
+                                    }
+                                    .buttonStyle(.glass(.clear))
+                                    .opacity((showExitHint || exitHoldProgress > 0.1) ? 1 : 0)
+                                }
+                                .padding(.bottom, 16)
+                                .opacity(isInCountIn ? 0 : 1)
+                                .animation(.smooth(duration: 0.5), value: isInCountIn)
+                                // Синхронизация с метрономом: сжатие и затемнение при выходе
+                                .scaleEffect(1 - 0.12 * exitHoldProgress)
+                                .opacity(1 - 0.55 * exitHoldProgress)
+                            }
+                            
+                            // Подсказка выхода — только при касании или удержании
                             Text("Touch and hold to exit")
                                 .font(.system(size: 13, weight: .medium))
                                 // Чуть тусклее в покое, ярче при касании/удержании
                                 .foregroundStyle(.white.opacity(min(0.8, 0.30 + 0.35 * exitHoldProgress + (showExitHint ? 0.15 : 0))))
                                 .padding(.bottom, 24)
-                                .opacity((alwaysShowExitHint || showExitHint || exitHoldProgress > 0.1) ? 1 : 0)
+                                .opacity((showExitHint || exitHoldProgress > 0.1) ? 1 : 0)
+                                // Синхронизация с метрономом: сжатие при выходе
+                                .scaleEffect(1 - 0.12 * exitHoldProgress)
                         }
                     }
                     .contentShape(Rectangle())
@@ -175,17 +278,13 @@ struct ContentView: View {
                 VStack(spacing: 48) {
                     bpmBlock
 
-                    // Две фиксированные кнопки: выбор ритма (меню) и запуск Focus Mode
+                    // Две фиксированные кнопки: настройки и запуск Focus Mode
                     VStack(spacing: 12) {
-                        // Кнопка-меню выбора ритма (по тапу всплывает меню)
-                        Menu {
-                            Picker("Rhythm", selection: $rhythmPreset) {
-                                ForEach(RhythmPreset.allCases) { preset in
-                                    Text(preset.rawValue).tag(preset)
-                                }
-                            }
+                        // Кнопка настроек (открывает sheet с настройками)
+                        Button {
+                            showingSettings = true
                         } label: {
-                            Text(rhythmPreset.rawValue)
+                            Text("Settings")
                                 .font(.system(size: 16, weight: .semibold))
                                 .frame(width: 180, height: 48)
                         }
@@ -225,6 +324,17 @@ struct ContentView: View {
                 // В фоне/неактивном состоянии разблокируем, чтобы не держать зря
                 UIApplication.shared.isIdleTimerDisabled = false
             }
+        }
+        .sheet(isPresented: $showingSettings) {
+            MetronomeSettingsSheet(
+                rhythmPreset: $rhythmPreset,
+                flashBrightness: $flashBrightness,
+                countInMode: $countInMode,
+                barCounterMode: $barCounterMode,
+                barCounterBars: $barCounterBars,
+                barCounterMinutes: $barCounterMinutes
+            )
+            .preferredColorScheme(.dark)
         }
     }
 
@@ -282,23 +392,38 @@ struct ContentView: View {
     /// звук следует иерархии акцентов, как и вспышки: mute молчит,
     /// слабый глуше, сильный звонче (демо на системных звуках,
     /// на проде заменятся своими). Каждый следующий удар планируем
-    /// от точки старта — без накопления дрейфа.
+    /// от точки старта — без накопления дрейфа. Count-in использует
+    /// упрощённые щелчки (только единица такта звучит громко).
     private func startMetronome() {
         metronomeTask?.cancel()
         let start = Date()
         metronomeStartDate = start
         let pattern = rhythmPreset.pattern
+        let countInBeats = countInMode.bars * pattern.count
+        
         metronomeTask = Task {
             let interval = 60.0 / Double(bpm)
             var beat = 0
-            // Точка стартует с левого боба — щелчки в моменты касания бобов
+            
             while !Task.isCancelled {
-                let clickID: SystemSoundID? = switch pattern[beat % pattern.count].accent {
-                case .mute: nil       // пауза — тишина
-                case .weak: 1105      // глухой низкий щелчок
-                case .medium: 1104    // обычный «Tock»
-                case .strong: 1103    // звонкий акцентный «Tink»
+                let absoluteBeat = beat - countInBeats
+                
+                // Звук: count-in использует особые щелчки, основной метроном — pattern
+                let clickID: SystemSoundID?
+                if beat < countInBeats {
+                    // Count-in: особые щелчки — 1306 для единицы такта, 1105 для остальных
+                    let isBarStart = beat % pattern.count == 0
+                    clickID = isBarStart ? 1306 : 1105
+                } else {
+                    // Обычный метроном: следуем pattern
+                    clickID = switch pattern[absoluteBeat % pattern.count].accent {
+                    case .mute: nil       // пауза — тишина
+                    case .weak: 1105      // глухой низкий щелчок
+                    case .medium: 1104    // обычный «Tock»
+                    case .strong: 1103    // звонкий акцентный «Tink»
+                    }
                 }
+                
                 if let clickID {
                     AudioServicesPlaySystemSound(clickID)
                 }
@@ -592,7 +717,92 @@ struct ContentView: View {
     }
 }
 
+/// Sheet с настройками метронома
+struct MetronomeSettingsSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    
+    @Binding var rhythmPreset: RhythmPreset
+    @Binding var flashBrightness: Double
+    @Binding var countInMode: CountInMode
+    @Binding var barCounterMode: BarCounterMode
+    @Binding var barCounterBars: Int
+    @Binding var barCounterMinutes: Int
+    
+    var body: some View {
+        NavigationStack {
+            Form {
+                // Выбор ритма
+                Section {
+                    Picker("Rhythm", selection: $rhythmPreset) {
+                        ForEach(RhythmPreset.allCases) { preset in
+                            Text(preset.rawValue).tag(preset)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                } header: {
+                    Text("Rhythm")
+                }
+                
+                // Яркость вспышки
+                Section {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("Flash brightness")
+                            Spacer()
+                            Text("\(Int(flashBrightness * 100))%")
+                                .foregroundStyle(.secondary)
+                        }
+                        Slider(value: $flashBrightness, in: 0...1)
+                    }
+                } header: {
+                    Text("Visual")
+                }
+                
+                // Отсчёт перед стартом
+                Section {
+                    Picker("Count-In", selection: $countInMode) {
+                        ForEach(CountInMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                } header: {
+                    Text("Count-In")
+                }
+                
+                // Счётчик тактов
+                Section {
+                    Picker("Bar counter", selection: $barCounterMode) {
+                        ForEach(BarCounterMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    
+                    if barCounterMode == .byBar {
+                        Stepper("Bars: \(barCounterBars)", value: $barCounterBars, in: 1...999)
+                    } else if barCounterMode == .byCounter {
+                        Stepper("Minutes: \(barCounterMinutes)", value: $barCounterMinutes, in: 1...60)
+                    }
+                } header: {
+                    Text("Practice Timer")
+                }
+            }
+            .navigationTitle("Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
 #Preview {
     ContentView()
         .preferredColorScheme(.dark)
 }
+

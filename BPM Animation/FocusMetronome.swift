@@ -113,6 +113,7 @@ struct MetronomeFlashView: View {
     let startDate: Date
     let bpm: Int
     let pattern: [BeatStyle]
+    let flashBrightness: Double
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityDimFlashingLights) private var dimFlashingLights
@@ -148,8 +149,8 @@ struct MetronomeFlashView: View {
                 let tempoDim = 0.35 + 0.65 * min(1, interval / 0.5)
                 let calmFactor = (reduceMotion || dimFlashingLights) ? 0.12 : 1.0
                 // Нежный световой «выдох» в цвете доли: невысокий пик
-                // и плавное затухание
-                let flashPeak = accentPeak * tempoDim * calmFactor
+                // и плавное затухание, с учётом настройки яркости пользователя
+                let flashPeak = accentPeak * tempoDim * calmFactor * flashBrightness
                 let flash = flashPeak * exp(-sinceHit / 0.16) * smooth(t / 0.4)
                 if flash > 0.01 {
                     context.fill(
@@ -188,7 +189,11 @@ struct MetronomePendulumView: View {
     let pattern: [BeatStyle]
     let indicatorsOnTop: Bool
     let topIndicatorY: CGFloat?
-    
+    let barCounterMode: BarCounterMode
+    let barCounterBars: Int
+    let barCounterMinutes: Int
+    let countInBars: Int
+
     /// Доступность: убираем стробирующие и «летающие» эффекты
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -222,6 +227,197 @@ struct MetronomePendulumView: View {
                 let sinceHit = t.truncatingRemainder(dividingBy: interval)
 
                 let beats = max(1, pattern.count)
+                let barDuration = interval * Double(beats)
+                
+                // Count-in: показываем только маятник между бобами с цифрой обратного отсчёта
+                let countInDuration = barDuration * Double(countInBars)
+                let isCountingIn = countInBars > 0 && t < countInDuration
+                
+                if isCountingIn {
+                    let centerX = size.width / 2
+                    let centerY = size.height / 2
+                    
+                    // Текущая доля count-in
+                    let beatIndex = Int(t / interval)
+                    
+                    // Обратный отсчёт в УДАРАХ (не в тактах)
+                    let totalBeats = countInBars * beats
+                    let beatsRemaining = totalBeats - beatIndex
+                    
+                    // Цифра показывает удары до конца текущего такта (4,3,2,1 → 4,3,2,1)
+                    let currentBeat = beatIndex % beats
+                    let countNumber = beats - currentBeat
+                    
+                    // Прогресс внутри текущей доли
+                    let beatProgress = (t - Double(beatIndex) * interval) / interval
+                    
+                    // Бобы по краям — КРУПНЕЕ в count-in
+                    let midY = PendulumGeometry.midY(size)
+                    let beanWidthBase = PendulumGeometry.beanWidth * 1.3  // Увеличили на 30%
+                    let beanHeightBase = PendulumGeometry.beanHeight * 1.3
+                    let leftX = PendulumGeometry.leftX(size)
+                    let rightX = PendulumGeometry.rightX(size)
+                    
+                    let beanAppear = smooth(t / 0.3)
+                    
+                    // Последний удар count-in для спец-эффектов
+                    let isLastBeat = beatsRemaining == 1
+                    
+                    // Получаем стиль текущей доли для цвета
+                    let currentBeatStyle = pattern[currentBeat % pattern.count]
+                    
+                    for side in 0..<2 {
+                        let beanX = side == 0 ? leftX : rightX
+                        
+                        // СИНХРОННОЕ мигание: оба боба мигают одновременно на каждый удар
+                        let sinceCurrentBeat = beatProgress * interval
+                        
+                        // Пульс с подсветкой на удар (синхронно для обоих бобов)
+                        let pulse = exp(-sinceCurrentBeat / 0.16) * cos(sinceCurrentBeat * 18) * 0.18
+                        let hitGlow = exp(-sinceCurrentBeat / 0.12)
+                        
+                        let scale = CGFloat(beanAppear * (1 + pulse))
+                        let rect = CGRect(
+                            x: beanX - beanWidthBase / 2 * scale,
+                            y: midY - beanHeightBase / 2 * scale,
+                            width: beanWidthBase * scale,
+                            height: beanHeightBase * scale
+                        )
+                        let bean = Path(roundedRect: rect, cornerRadius: min(beanWidthBase, beanHeightBase) / 2 * scale)
+                        
+                        // Базовый серый цвет
+                        let baseOpacity = 0.25 + 0.5 * hitGlow
+                        context.fill(bean, with: .color(.white.opacity(baseOpacity * beanAppear)))
+                        
+                        // Цветная вспышка синхронно с фоном (по силе акцента)
+                        let accentFlash: Double = switch currentBeatStyle.accent {
+                        case .mute: 0
+                        case .weak: 0.3
+                        case .medium: 0.55
+                        case .strong: 0.85
+                        }
+                        let colorGlow = hitGlow * accentFlash
+                        if colorGlow > 0.01 {
+                            context.fill(bean, with: .color(currentBeatStyle.color.opacity(colorGlow * beanAppear)))
+                        }
+                    }
+                    
+                    // Магическая трансформация цифры в точку на последнем ударе
+                    if isLastBeat {
+                        let rawProgress = beatProgress
+                        let transformProgress = smooth(rawProgress)
+                        
+                        // Многофазная трансформация
+                        let shrinkPhase = min(1, rawProgress / 0.25)          // 0-25%: сжатие + вспышка
+                        let morphPhase = max(0, min(1, (rawProgress - 0.25) / 0.35))  // 25-60%: морфинг
+                        let movePhase = max(0, min(1, (rawProgress - 0.6) / 0.4))     // 60-100%: полёт
+                        
+                        // Позиция с плавным ускорением
+                        let startX = leftX
+                        let easedMove = movePhase * movePhase * (3 - 2 * movePhase)
+                        let morphX = centerX + (startX - centerX) * easedMove
+                        
+                        // Размеры с драматичным сжатием
+                        let baseSize: CGFloat = 80
+                        let shrinkScale = 1.0 - shrinkPhase * 0.2
+                        let morphScale = 1.0 - morphPhase * 0.75
+                        let numberSize = baseSize * shrinkScale * morphScale
+                        let dotSize: CGFloat = 26 * morphPhase
+                        
+                        // Драматическая вспышка в начале
+                        let flashIntensity = exp(-shrinkPhase * 6) * 0.7
+                        let numberOpacity = (1 - morphPhase) * (0.85 + flashIntensity) * beanAppear
+                        let dotOpacity = morphPhase * beanAppear
+                        
+                        // Рисуем цифру с вспышкой
+                        if numberOpacity > 0.01 && morphPhase < 0.95 {
+                            // Внешнее гало
+                            if shrinkPhase < 0.7 {
+                                context.drawLayer { layer in
+                                    layer.addFilter(.blur(radius: 25 * flashIntensity))
+                                    layer.draw(
+                                        Text("\(countNumber)")
+                                            .font(.system(size: numberSize * (1 + flashIntensity * 0.6), weight: .semibold))
+                                            .foregroundStyle(.white.opacity(flashIntensity * 0.5)),
+                                        at: CGPoint(x: morphX, y: centerY)
+                                    )
+                                }
+                            }
+                            
+                            // Основная цифра
+                            context.draw(
+                                Text("\(countNumber)")
+                                    .font(.system(size: numberSize, weight: .semibold))
+                                    .foregroundStyle(.white.opacity(numberOpacity)),
+                                at: CGPoint(x: morphX, y: centerY)
+                            )
+                        }
+                        
+                        // Точка с многослойным свечением и motion blur
+                        if dotOpacity > 0.01 {
+                            let dotRect = CGRect(
+                                x: morphX - dotSize / 2, y: centerY - dotSize / 2,
+                                width: dotSize, height: dotSize
+                            )
+                            
+                            // Внешний слой - мягкое свечение
+                            context.drawLayer { layer in
+                                layer.addFilter(.blur(radius: 26 * morphPhase))
+                                layer.fill(
+                                    Path(ellipseIn: dotRect.insetBy(dx: -20 * morphPhase, dy: -20 * morphPhase)),
+                                    with: .color(.white.opacity(0.25 * dotOpacity))
+                                )
+                            }
+                            
+                            // Средний слой - яркое ядро
+                            context.drawLayer { layer in
+                                layer.addFilter(.blur(radius: 14 * morphPhase))
+                                layer.fill(
+                                    Path(ellipseIn: dotRect.insetBy(dx: -10 * morphPhase, dy: -10 * morphPhase)),
+                                    with: .color(.white.opacity(0.65 * dotOpacity))
+                                )
+                            }
+                            
+                            // Motion blur trail
+                            if movePhase > 0.15 {
+                                for i in 1...6 {
+                                    let trailProg = Double(i) / 6.0
+                                    let trailX = morphX + (centerX - morphX) * trailProg * 0.35
+                                    let trailAlpha = (1 - trailProg) * 0.12 * movePhase * dotOpacity
+                                    let trailSize = dotSize * (1 - trailProg * 0.25)
+                                    
+                                    let trailRect = CGRect(
+                                        x: trailX - trailSize / 2, y: centerY - trailSize / 2,
+                                        width: trailSize, height: trailSize
+                                    )
+                                    context.fill(Path(ellipseIn: trailRect), with: .color(.white.opacity(trailAlpha)))
+                                }
+                            }
+                            
+                            // Основная точка
+                            context.fill(Path(ellipseIn: dotRect), with: .color(.white.opacity(dotOpacity)))
+                            
+                            // Внутренний блик
+                            let highlight = dotRect.insetBy(dx: dotSize * 0.3, dy: dotSize * 0.3)
+                            context.fill(Path(ellipseIn: highlight), with: .color(.white.opacity(0.5 * dotOpacity)))
+                        }
+                    } else {
+                        // Обычная цифра с spring пульсом
+                        let pulseFactor = 1.0 + 0.1 * exp(-beatProgress * 7) * cos(beatProgress * 12)
+                        let numberSize = 80 * CGFloat(max(0.95, pulseFactor))
+                        let numberOpacity = 0.85 * beanAppear
+                        
+                        context.draw(
+                            Text("\(countNumber)")
+                                .font(.system(size: numberSize, weight: .semibold))
+                                .foregroundStyle(.white.opacity(numberOpacity)),
+                            at: CGPoint(x: centerX, y: centerY)
+                        )
+                    }
+                    
+                    // Не показываем остальной UI во время count-in
+                    return
+                }
 
                 let midY = PendulumGeometry.midY(size)
                 let beanWidth = PendulumGeometry.beanWidth
@@ -243,10 +439,19 @@ struct MetronomePendulumView: View {
                 // Мгновенная скорость (0 у бобов, максимум в середине пролёта)
                 let speed = sin(.pi * phase)
 
-                // Позиция в такте
+                // Позиция в такте (с учётом count-in)
                 let currentBeat = beatIndex % beats
-                let barDuration = interval * Double(beats)
-                let barIndex = Int(t / barDuration)
+                let barIndex = Int(t / barDuration) - countInBars
+                
+                // Плавное появление UI после count-in и уменьшение бобов
+                // UI появляется быстрее (0.7s), бобы уменьшаются чуть дольше (0.6s)
+                let timeSinceCountIn = max(0, t - countInDuration)
+                let uiAppear = smooth(min(1, timeSinceCountIn / 0.7))
+                
+                // Бобы плавно уменьшаются от увеличенного размера count-in до нормального
+                let beanSizeTransition = timeSinceCountIn < 0.6 
+                    ? 1.3 - 0.3 * smooth(timeSinceCountIn / 0.6)
+                    : 1.0
 
                 // Ближайший по времени удар: до середины пролёта — прошедший,
                 // после — предстоящий. Его цвет несут точка и боб при слиянии.
@@ -298,7 +503,7 @@ struct MetronomePendulumView: View {
                     waves.append((CGPoint(x: waveX, y: midY), age, hitStyle))
                 }
 
-                if !waves.isEmpty {
+                if !waves.isEmpty && uiAppear > 0.01 {
                     for row in 0..<rows {
                         for col in 0..<cols {
                             let point = CGPoint(
@@ -333,7 +538,7 @@ struct MetronomePendulumView: View {
                             guard intensity > 0.03 else { continue }
                             let dotRadius = 0.8 + 0.6 * intensity
                             let accessibilityDim = reduceMotion ? 0.7 : 1.0
-                            let finalOpacity = 0.18 * intensity * accessibilityDim
+                            let finalOpacity = 0.18 * intensity * accessibilityDim * uiAppear
                             context.fill(
                                 Path(ellipseIn: CGRect(
                                     x: point.x - dotRadius, y: point.y - dotRadius,
@@ -384,8 +589,8 @@ struct MetronomePendulumView: View {
                     // чуть-чуть в рост
                     let reach = max(0, 1 - Double(distance) / 100)
                     let inflate = CGFloat(pow(reach, 1.6))
-                    let width = beanWidth * (1 + 0.55 * inflate) * scale
-                    let height = beanHeight * (1 + 0.18 * inflate) * scale
+                    let width = beanWidth * beanSizeTransition * (1 + 0.55 * inflate) * scale
+                    let height = beanHeight * beanSizeTransition * (1 + 0.18 * inflate) * scale
 
                     // …и подаётся навстречу точке: прирост ширины уходит
                     // в ближний к ней край, а когда точка входит в центр —
@@ -434,7 +639,7 @@ struct MetronomePendulumView: View {
                     indicatorY = midY + 96
                 }
                 let rowWidth = indicatorSpacing * CGFloat(beats - 1)
-                let rowAppear = smooth(t / 0.4)
+                let rowAppear = smooth(t / 0.4) * uiAppear
                 for beat in 0..<beats {
                     let beatStyle = pattern[beat]
                     let heat = beat == currentBeat ? exp(-sinceHit / 0.35) : 0
@@ -500,6 +705,33 @@ struct MetronomePendulumView: View {
                     }
                 }
 
+                // Счётчик тактов или таймер под мини-бобами
+                if barCounterMode != .off && uiAppear > 0.01 {
+                    let counterY = indicatorY + 32
+                    let counterText: String
+                    
+                    if barCounterMode == .byBar {
+                        // Обратный отсчёт тактов с суффиксом "b"
+                        let totalBars = barCounterBars
+                        let barsRemaining = max(0, totalBars - barIndex)
+                        counterText = "\(barsRemaining) b"
+                    } else {
+                        // Обратный отсчёт времени (by counter)
+                        let totalSeconds = barCounterMinutes * 60
+                        let elapsed = Int(t)
+                        let remaining = max(0, totalSeconds - elapsed)
+                        let minutes = remaining / 60
+                        let seconds = remaining % 60
+                        counterText = String(format: "%d:%02d", minutes, seconds)
+                    }
+                    
+                    context.draw(Text(counterText)
+                        .font(.system(size: 15))
+                        .foregroundStyle(.white.opacity(0.5 * rowAppear * uiAppear)),
+                        at: CGPoint(x: centerX, y: counterY)
+                    )
+                }
+
                 // Комета-шлейф: деликатный, чтобы героем оставалась точка;
                 // при Reduce Motion выключен
                 if speed > 0.15, !reduceMotion {
@@ -529,7 +761,13 @@ struct MetronomePendulumView: View {
 
                 let nearestIsMute = nearestHitStyle.accent == .mute
                 let effectiveMorph = nearestIsMute ? 0.0 : max(0, 1 - nearestDistance / meltRange)
-                let dotDiameter: CGFloat = 22 * CGFloat(0.5 + 0.5 * dotAppear)
+                
+                // Базовый размер точки: увеличен в count-in, плавно уменьшается после
+                let dotBaseDiameter: CGFloat = timeSinceCountIn < 0.6
+                    ? 26 - 4 * CGFloat(smooth(timeSinceCountIn / 0.6))
+                    : 22
+                let dotDiameter: CGFloat = dotBaseDiameter * CGFloat(0.5 + 0.5 * dotAppear)
+                
                 // Вытягивание по ходу движения, объём сохраняется; у бобов гаснет
                 let stretchBase = reduceMotion ? 1.0 : (1 + 0.22 * speed * (1 - effectiveMorph))
                 let stretch = nearestIsMute ? 1.0 : stretchBase
@@ -539,8 +777,8 @@ struct MetronomePendulumView: View {
                 // в момент слияния формы совпадают один в один
                 if !nearestIsMute {
                     let targetInflate = CGFloat(pow(effectiveMorph, 1.3))
-                    let targetWidth = beanWidth * (1 + 0.55 * targetInflate)
-                    let targetHeight = beanHeight * (1 + 0.18 * targetInflate)
+                    let targetWidth = beanWidth * beanSizeTransition * (1 + 0.55 * targetInflate)
+                    let targetHeight = beanHeight * beanSizeTransition * (1 + 0.18 * targetInflate)
                     dotWidth += (targetWidth - dotWidth) * effectiveMorph
                     dotHeight += (targetHeight - dotHeight) * effectiveMorph
                 }
@@ -557,10 +795,21 @@ struct MetronomePendulumView: View {
 
                 // Свечение дышит в ритм: вспыхивает на ударе, успокаивается в полёте
                 let glowPulse = exp(-sinceHit / 0.15)
-                let glowOpacity = (0.6 + 0.35 * glowPulse) * dotAppear
-                let glowInset = -10 - CGFloat(glowPulse) * 4
+                // Более яркое свечение в count-in, плавно уменьшается
+                let glowBase = timeSinceCountIn < 0.6
+                    ? 0.65 - 0.05 * smooth(timeSinceCountIn / 0.6)
+                    : 0.6
+                let glowOpacity = (glowBase + 0.35 * glowPulse) * dotAppear
+                // Более широкое свечение в count-in
+                let glowBlur = timeSinceCountIn < 0.6
+                    ? 18 - 2 * CGFloat(smooth(timeSinceCountIn / 0.6))
+                    : 16
+                let glowInsetBase = timeSinceCountIn < 0.6
+                    ? -12 + 2 * CGFloat(smooth(timeSinceCountIn / 0.6))
+                    : -10
+                let glowInset = glowInsetBase - CGFloat(glowPulse) * (timeSinceCountIn < 0.6 ? 5 : 4)
                 context.drawLayer { layer in
-                    layer.addFilter(.blur(radius: 16))
+                    layer.addFilter(.blur(radius: glowBlur))
                     layer.fill(
                         Path(roundedRect: dotRect.insetBy(dx: glowInset, dy: glowInset),
                              cornerRadius: dotCornerRadius - glowInset),
@@ -582,3 +831,34 @@ struct MetronomePendulumView: View {
     }
 }
 
+struct FocusMetronomeContainer: View {
+    @State private var startDate = Date()
+    @State private var bpm: Int = 90
+    @State private var preset: RhythmPreset = .fourFour
+
+    var body: some View {
+        ZStack {
+            Color.black
+                .ignoresSafeArea()
+
+            MetronomeFlashView(startDate: startDate, bpm: bpm, pattern: preset.pattern, flashBrightness: 0.8)
+
+            MetronomePendulumView(
+                startDate: startDate,
+                bpm: bpm,
+                pattern: preset.pattern,
+                indicatorsOnTop: false,
+                topIndicatorY: nil,
+                barCounterMode: .off,
+                barCounterBars: 16,
+                barCounterMinutes: 5,
+                countInBars: 0
+            )
+        }
+    }
+}
+
+
+#Preview {
+    FocusMetronomeContainer()
+}
