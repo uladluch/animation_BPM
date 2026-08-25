@@ -94,6 +94,13 @@ struct ContentView: View {
     @State private var exitHoldProgress: Double = 0
     /// Выбранный ритмический пресет (размер или экспериментальный рисунок)
     @State private var rhythmPreset: RhythmPreset = .experimental
+
+    /// Циклы автоповтора для зажатых кнопок -5/+5 в фокус-режиме
+    @State private var bpmStepTaskMinus: Task<Void, Never>?
+    @State private var bpmStepTaskPlus: Task<Void, Never>?
+    /// Если автоповтор уже сработал, обычный тап (по отпусканию) не должен сделать ещё один шаг
+    @State private var bpmStepDidRepeatMinus = false
+    @State private var bpmStepDidRepeatPlus = false
     
     /// Показываем ли sheet с настройками
     @State private var showingSettings = false
@@ -199,10 +206,14 @@ struct ContentView: View {
                                 }()
                                 
                                 HStack(spacing: 16) {
-                                    // Кнопка -5
+                                    // Кнопка -5 (тап — один шаг, зажатие — автоповтор)
                                     Button {
-                                        withAnimation(.smooth(duration: 0.25)) {
-                                            bpm = max(20, bpm - 5)
+                                        if bpmStepDidRepeatMinus {
+                                            bpmStepDidRepeatMinus = false
+                                        } else {
+                                            withAnimation(.smooth(duration: 0.25)) {
+                                                bpm = max(20, bpm - 5)
+                                            }
                                         }
                                     } label: {
                                         Text("-5")
@@ -211,21 +222,37 @@ struct ContentView: View {
                                     }
                                     .buttonStyle(.glass(.clear))
                                     .opacity((showExitHint || exitHoldProgress > 0.1) ? 1 : 0)
-                                    
-                                    // BPM индикатор
+                                    .simultaneousGesture(
+                                        DragGesture(minimumDistance: 0)
+                                            .onChanged { _ in
+                                                if bpmStepTaskMinus == nil {
+                                                    startBPMAutoRepeat(direction: -1)
+                                                }
+                                            }
+                                            .onEnded { _ in
+                                                stopBPMAutoRepeat(direction: -1)
+                                            }
+                                    )
+
+                                    // BPM индикатор — фиксированная ширина под 3 цифры, чтобы кнопки не смещались
                                     VStack(spacing: 2) {
                                         Text("\(bpm)")
                                             .font(.system(size: 27, weight: .medium))
                                             .foregroundStyle(.white)
+                                            .frame(minWidth: 54)
                                         Text("BPM")
                                             .font(.system(size: 12, weight: .regular))
                                             .foregroundStyle(.white.opacity(0.5))
                                     }
                                     
-                                    // Кнопка +5
+                                    // Кнопка +5 (тап — один шаг, зажатие — автоповтор)
                                     Button {
-                                        withAnimation(.smooth(duration: 0.25)) {
-                                            bpm = min(maxBPM, bpm + 5)
+                                        if bpmStepDidRepeatPlus {
+                                            bpmStepDidRepeatPlus = false
+                                        } else {
+                                            withAnimation(.smooth(duration: 0.25)) {
+                                                bpm = min(maxBPM, bpm + 5)
+                                            }
                                         }
                                     } label: {
                                         Text("+5")
@@ -234,7 +261,19 @@ struct ContentView: View {
                                     }
                                     .buttonStyle(.glass(.clear))
                                     .opacity((showExitHint || exitHoldProgress > 0.1) ? 1 : 0)
+                                    .simultaneousGesture(
+                                        DragGesture(minimumDistance: 0)
+                                            .onChanged { _ in
+                                                if bpmStepTaskPlus == nil {
+                                                    startBPMAutoRepeat(direction: 1)
+                                                }
+                                            }
+                                            .onEnded { _ in
+                                                stopBPMAutoRepeat(direction: 1)
+                                            }
+                                    )
                                 }
+                                .sensoryFeedback(.impact(flexibility: .soft, intensity: 0.6), trigger: bpm)
                                 .padding(.bottom, 16)
                                 .opacity(isInCountIn ? 0 : 1)
                                 .animation(.smooth(duration: 0.5), value: isInCountIn)
@@ -243,34 +282,25 @@ struct ContentView: View {
                                 .opacity(1 - 0.55 * exitHoldProgress)
                             }
                             
-                            // Подсказка выхода — только при касании или удержании
-                            Text("Touch and hold to exit")
+                            // Подсказка выхода — только при касании, тап по ней выходит из режима
+                            Text("Tap to exit Focus Mode")
                                 .font(.system(size: 13, weight: .medium))
-                                // Чуть тусклее в покое, ярче при касании/удержании
+                                // Чуть тусклее в покое, ярче при касании
                                 .foregroundStyle(.white.opacity(min(0.8, 0.30 + 0.35 * exitHoldProgress + (showExitHint ? 0.15 : 0))))
                                 .padding(.bottom, 24)
                                 .opacity((showExitHint || exitHoldProgress > 0.1) ? 1 : 0)
                                 // Синхронизация с метрономом: сжатие при выходе
                                 .scaleEffect(1 - 0.12 * exitHoldProgress)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    exitFocusMode()
+                                }
+                                .allowsHitTesting(showExitHint || exitHoldProgress > 0.1)
                         }
                     }
                     .contentShape(Rectangle())
                     .onTapGesture {
                         showExitHintBriefly()
-                    }
-                    .onLongPressGesture(minimumDuration: 0.9) {
-                        exitFocusMode()
-                    } onPressingChanged: { pressing in
-                        if pressing {
-                            withAnimation(.linear(duration: 0.9)) {
-                                exitHoldProgress = 1
-                            }
-                        } else if isFocusMode {
-                            // Отпустил раньше времени — отпружиниваем обратно
-                            withAnimation(.spring(duration: 0.45, bounce: 0.3)) {
-                                exitHoldProgress = 0
-                            }
-                        }
                     }
                 }
                 .transition(.opacity)
@@ -373,6 +403,48 @@ struct ContentView: View {
         }
     }
 
+    /// Начинает автоповтор изменения BPM, пока кнопка -5/+5 зажата
+    private func startBPMAutoRepeat(direction: Int) {
+        let task = Task {
+            // небольшая задержка перед началом автоповтора, чтобы не мешать быстрому тапу
+            try? await Task.sleep(for: .seconds(0.4))
+            guard !Task.isCancelled else { return }
+            while !Task.isCancelled {
+                await MainActor.run {
+                    if direction < 0 {
+                        bpmStepDidRepeatMinus = true
+                    } else {
+                        bpmStepDidRepeatPlus = true
+                    }
+                    withAnimation(.smooth(duration: 0.15)) {
+                        bpm = direction < 0 ? max(20, bpm - 5) : min(maxBPM, bpm + 5)
+                    }
+                }
+                try? await Task.sleep(for: .seconds(0.12))
+            }
+        }
+        if direction < 0 {
+            bpmStepTaskMinus?.cancel()
+            bpmStepDidRepeatMinus = false
+            bpmStepTaskMinus = task
+        } else {
+            bpmStepTaskPlus?.cancel()
+            bpmStepDidRepeatPlus = false
+            bpmStepTaskPlus = task
+        }
+    }
+
+    /// Останавливает автоповтор при отпускании кнопки
+    private func stopBPMAutoRepeat(direction: Int) {
+        if direction < 0 {
+            bpmStepTaskMinus?.cancel()
+            bpmStepTaskMinus = nil
+        } else {
+            bpmStepTaskPlus?.cancel()
+            bpmStepTaskPlus = nil
+        }
+    }
+
     /// Выходим из фокус-режима: останавливаем метроном и возвращаем интерфейс
     private func exitFocusMode() {
         metronomeTask?.cancel()
@@ -381,6 +453,10 @@ struct ContentView: View {
         exitHintTask?.cancel()
         showExitHint = false
         alwaysShowExitHint = false
+        bpmStepTaskMinus?.cancel()
+        bpmStepTaskMinus = nil
+        bpmStepTaskPlus?.cancel()
+        bpmStepTaskPlus = nil
         UIApplication.shared.isIdleTimerDisabled = false
         withAnimation(.smooth(duration: 0.5)) {
             isFocusMode = false
