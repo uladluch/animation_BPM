@@ -819,17 +819,15 @@ struct MetronomeSettingsSheet: View {
                     Text("Rhythm")
                 }
                 
-                // Яркость вспышки
+                // Вспышка вкл/выкл
                 Section {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text("Flash brightness")
-                            Spacer()
-                            Text("\(Int(flashBrightness * 100))%")
-                                .foregroundStyle(.secondary)
-                        }
-                        Slider(value: $flashBrightness, in: 0...1)
-                    }
+                    Toggle(
+                        "Flash",
+                        isOn: Binding(
+                            get: { flashBrightness > 0 },
+                            set: { flashBrightness = $0 ? 0.8 : 0 }
+                        )
+                    )
                 } header: {
                     Text("Visual")
                 }

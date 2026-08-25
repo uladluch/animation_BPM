@@ -263,20 +263,11 @@ struct MetronomePendulumView: View {
                     // Последний удар count-in для спец-эффектов
                     let isLastBeat = beatsRemaining == 1
                     
-                    // Получаем стиль текущей доли для цвета
-                    let currentBeatStyle = pattern[currentBeat % pattern.count]
-                    
+                    // Бобы в count-in статичны — не мигают, только отсчёт меняется
                     for side in 0..<2 {
                         let beanX = side == 0 ? leftX : rightX
-                        
-                        // СИНХРОННОЕ мигание: оба боба мигают одновременно на каждый удар
-                        let sinceCurrentBeat = beatProgress * interval
-                        
-                        // Пульс с подсветкой на удар (синхронно для обоих бобов)
-                        let pulse = exp(-sinceCurrentBeat / 0.16) * cos(sinceCurrentBeat * 18) * 0.18
-                        let hitGlow = exp(-sinceCurrentBeat / 0.12)
-                        
-                        let scale = CGFloat(beanAppear * (1 + pulse))
+
+                        let scale = CGFloat(beanAppear)
                         let rect = CGRect(
                             x: beanX - beanWidthBase / 2 * scale,
                             y: midY - beanHeightBase / 2 * scale,
@@ -284,22 +275,9 @@ struct MetronomePendulumView: View {
                             height: beanHeightBase * scale
                         )
                         let bean = Path(roundedRect: rect, cornerRadius: min(beanWidthBase, beanHeightBase) / 2 * scale)
-                        
-                        // Базовый серый цвет
-                        let baseOpacity = 0.25 + 0.5 * hitGlow
-                        context.fill(bean, with: .color(.white.opacity(baseOpacity * beanAppear)))
-                        
-                        // Цветная вспышка синхронно с фоном (по силе акцента)
-                        let accentFlash: Double = switch currentBeatStyle.accent {
-                        case .mute: 0
-                        case .weak: 0.3
-                        case .medium: 0.55
-                        case .strong: 0.85
-                        }
-                        let colorGlow = hitGlow * accentFlash
-                        if colorGlow > 0.01 {
-                            context.fill(bean, with: .color(currentBeatStyle.color.opacity(colorGlow * beanAppear)))
-                        }
+
+                        // Базовый серый цвет — без пульса и вспышек
+                        context.fill(bean, with: .color(.white.opacity(0.25 * beanAppear)))
                     }
                     
                     // Магическая трансформация цифры в точку на последнем ударе
