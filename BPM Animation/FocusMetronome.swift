@@ -190,40 +190,37 @@ struct MetronomeFlashView: View {
                 let beats = max(1, pattern.count)
                 let quarterInterval = 60.0 / Double(max(bpm, 1))
                 let subs = max(1, subdivision)
-                let subInterval = quarterInterval / Double(subs)
                 let t = max(0, timeline.date.timeIntervalSince(startDate))
                 // Субударная сетка выводится из четвертной, а не считается
                 // отдельно: иначе на границе четверти они расходятся
                 let quarterIndex = Int(t / quarterInterval)
                 let quarterPhase = (t - Double(quarterIndex) * quarterInterval) / quarterInterval
                 let subInQuarter = min(subs - 1, Int(quarterPhase * Double(subs)))
-                let sinceHit = (quarterPhase - Double(subInQuarter) / Double(subs)) * quarterInterval
                 let beatIndex = quarterIndex * subs + subInQuarter
                 let style = pattern[beatIndex % beats]
 
-                // Свет вспыхивает там, где он был в момент удара: на четвертной
-                // доле это ровно край, на внутреннем субударе — точка на пути.
-                // Край не вспыхивает, когда шарик летит между бобами.
-                let hitX = PendulumGeometry.x(
-                    quarter: quarterIndex,
-                    phase: Double(subInQuarter) / Double(subs),
-                    size: size
-                )
+                // Полноэкранная вспышка — событие основного пульса: она бывает
+                // только на четвертных долях. Промежуточные субудары экран не
+                // засвечивают, иначе триоль забивает сам пульс.
+                let isMainBeat = subInQuarter == 0
+                let hitX = PendulumGeometry.x(quarter: quarterIndex, phase: 0, size: size)
                 let hitCenter = CGPoint(x: hitX, y: PendulumGeometry.midY(size))
 
                 // Вспышка строго следует иерархии акцентов
-                let accentPeak: Double = switch style.accent {
+                let quarterAccent: Double = switch style.accent {
                 case .mute: 0
                 case .weak: 0.22
                 case .medium: 0.5
                 case .strong: 1.0
                 }
-                let tempoDim = 0.35 + 0.65 * min(1, subInterval / 0.5)
+                let accentPeak = isMainBeat ? quarterAccent : 0
+                let sinceQuarter = quarterPhase * quarterInterval
+                let tempoDim = 0.35 + 0.65 * min(1, quarterInterval / 0.5)
                 let calmFactor = (reduceMotion || dimFlashingLights) ? 0.12 : 1.0
                 // Нежный световой «выдох» в цвете доли: невысокий пик
                 // и плавное затухание, с учётом настройки яркости пользователя
                 let flashPeak = accentPeak * tempoDim * calmFactor * flashBrightness
-                let flash = flashPeak * exp(-sinceHit / 0.16) * smooth(t / 0.4)
+                let flash = flashPeak * exp(-sinceQuarter / 0.16) * smooth(t / 0.4)
                 if flash > 0.01 {
                     context.fill(
                         Path(CGRect(origin: .zero, size: size)),
@@ -379,8 +376,7 @@ struct MetronomePendulumView: View {
                     // Магическая трансформация цифры в точку на последнем ударе
                     if isLastBeat {
                         let rawProgress = beatProgress
-                        let transformProgress = smooth(rawProgress)
-                        
+
                         // Многофазная трансформация
                         let shrinkPhase = min(1, rawProgress / 0.25)          // 0-25%: сжатие + вспышка
                         let morphPhase = max(0, min(1, (rawProgress - 0.25) / 0.35))  // 25-60%: морфинг
