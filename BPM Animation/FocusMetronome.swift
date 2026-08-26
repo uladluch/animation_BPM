@@ -247,7 +247,7 @@ struct MetronomeFlashView: View {
                 // Нежный световой «выдох» в цвете доли: невысокий пик
                 // и плавное затухание, с учётом настройки яркости пользователя
                 let flashPeak = accentPeak * tempoDim * calmFactor * flashBrightness
-                let flash = flashPeak * exp(-sinceQuarter / 0.16) * smooth(t / 0.4)
+                let flash = flashPeak * exp(-sinceQuarter / 0.16)
                 if flash > 0.01 {
                     context.fill(
                         Path(CGRect(origin: .zero, size: size)),
@@ -552,11 +552,15 @@ struct MetronomePendulumView: View {
                 
                 // Плавное появление UI после count-in и уменьшение бобов
                 // UI появляется быстрее (0.7s), бобы уменьшаются чуть дольше (0.6s)
+                // Переходы «выхода из отсчёта» имеют смысл только если отсчёт был:
+                // иначе сцена на старте зря съезжает с увеличенного размера
+                // и проявляется как раз в тот момент, когда бьёт первая доля
+                let hadCountIn = countInBars > 0
                 let timeSinceCountIn = max(0, t - countInDuration)
-                let uiAppear = smooth(min(1, timeSinceCountIn / 0.7))
-                
+                let uiAppear = hadCountIn ? smooth(min(1, timeSinceCountIn / 0.7)) : 1
+
                 // Бобы плавно уменьшаются от увеличенного размера count-in до нормального
-                let beanSizeTransition = timeSinceCountIn < 0.6 
+                let beanSizeTransition = hadCountIn && timeSinceCountIn < 0.6
                     ? 1.3 - 0.3 * smooth(timeSinceCountIn / 0.6)
                     : 1.0
 
@@ -644,10 +648,10 @@ struct MetronomePendulumView: View {
                 for side in 0..<2 {
                     let beanX = side == 0 ? leftX : rightX
 
-                    // Оба боба проявляются вместе: сцена собирается целиком,
-                    // а не достраивается на глазах по мере первого пролёта
-                    let appear = smooth(t / 0.4)
-                    guard appear > 0.001 else { continue }
+                    // Сцена стоит на месте с первого кадра: экран фокус-режима
+                    // и так въезжает целиком, а собственный фейд съедал бы
+                    // ровно первый удар — вспышку, взрыв боба и старт полёта
+                    let appear = 1.0
 
                     // Боб принимает только четвертные доли: левый — чётные,
                     // правый — нечётные. Субудары его не трогают, иначе край
@@ -737,7 +741,7 @@ struct MetronomePendulumView: View {
                     indicatorY = midY + 96
                 }
                 let rowWidth = indicatorSpacing * CGFloat(indicatorCount - 1)
-                let rowAppear = smooth(t / 0.4) * uiAppear
+                let rowAppear = uiAppear
                 // Внутри группы «горит» вся четверть: её тепло считаем от
                 // момента, когда прозвучала первая доля группы
                 // Активная доля переключается только на новой четверти:
@@ -861,11 +865,10 @@ struct MetronomePendulumView: View {
 
                 // Точка: материализуется, в полёте вытягивается по ходу движения
                 // (squash & stretch), у боба вливается в его форму
-                let dotAppear = smooth(t / 0.45)
-                guard dotAppear > 0.001 else { return }
+                let dotAppear: CGFloat = 1
 
                 // Базовый размер точки: увеличен в count-in, плавно уменьшается после
-                let dotBaseDiameter: CGFloat = timeSinceCountIn < 0.6
+                let dotBaseDiameter: CGFloat = hadCountIn && timeSinceCountIn < 0.6
                     ? 26 - 4 * CGFloat(smooth(timeSinceCountIn / 0.6))
                     : 22
                 let dotDiameter: CGFloat = dotBaseDiameter * CGFloat(0.5 + 0.5 * dotAppear)
