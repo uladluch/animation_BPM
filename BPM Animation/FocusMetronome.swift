@@ -579,7 +579,6 @@ struct MetronomePendulumView: View {
                     : 0
 
                 // Позиция в такте (с учётом count-in)
-                let currentBeat = subBeat % beats
                 let currentQuarter = quarterIndex % quartersPerBar
                 let barIndex = Int(t / barDuration) - countInBars
                 
@@ -592,28 +591,6 @@ struct MetronomePendulumView: View {
                 let beanSizeTransition = timeSinceCountIn < 0.6 
                     ? 1.3 - 0.3 * smooth(timeSinceCountIn / 0.6)
                     : 1.0
-
-                // «Температура» сцены: остаточное свечение копят только
-                // звучащие доли — пауза тепла не оставляет. К концу такта бобы
-                // тлеют, а на единице сбрасываются в серый с «выдохом».
-                let soundingTotal = pattern.filter { $0.accent != .mute }.count
-                let barHeat: Double
-                if soundingTotal <= 1 {
-                    barHeat = 0
-                } else if currentBeat == 0 {
-                    // Выдох на единице: накопленный накал плавно отпускается.
-                    // В самом первом такте копить ещё нечего — остаёмся холодными.
-                    barHeat = barIndex == 0 ? 0 : 1 - smooth(sinceHit / 0.55)
-                } else {
-                    var soundedBefore = 0
-                    for beat in 0..<currentBeat where pattern[beat].accent != .mute {
-                        soundedBefore += 1
-                    }
-                    // Звучащая доля добавляет ступеньку тепла (с мягким фронтом),
-                    // на паузе уровень просто держится
-                    let front = pattern[currentBeat].accent != .mute ? smooth(sinceHit / 0.25) : 0
-                    barHeat = max(0, (Double(soundedBefore - 1) + front) / Double(soundingTotal - 1))
-                }
 
                 // Эхо-волна: каждый звучащий удар пускает от боба тусклую волну
                 // из точек в цвете своей доли — круги от камня в тёмной воде.
@@ -752,9 +729,8 @@ struct MetronomePendulumView: View {
                     )
                     let bean = Path(roundedRect: rect, cornerRadius: min(width, height) / 2)
 
-                    // Накал такта копит вся сцена, поэтому боб не темнеет
-                    // только оттого, что последняя пришедшая доля беззвучна
-                    let base = 0.22 + 0.3 * barHeat
+                    // Ровный серый: боб светится только от собственного удара
+                    let base = 0.22
                     context.fill(bean, with: .color(.white.opacity(base * appear)))
 
                     // Цвет — событие удара, а не подлёта: боб растёт и раздувается
