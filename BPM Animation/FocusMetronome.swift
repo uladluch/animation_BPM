@@ -52,9 +52,18 @@ enum RhythmPreset: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    /// Рисунок такта: стиль каждой доли.
-    /// Маятник «пролетает» по одному разу на элемент паттерна.
+    /// Рисунок такта: стиль каждой доли. Первая доля такта всегда выделена
+    /// цветом — так «раз» видно и по бобу, в который свет приходит, и по вспышке.
     var pattern: [BeatStyle] {
+        var beats = basePattern
+        if !beats.isEmpty {
+            beats[0].color = .beatLime
+        }
+        return beats
+    }
+
+    /// Рисунок без цветовой разметки — акценты и паузы
+    private var basePattern: [BeatStyle] {
         switch self {
         case .fourFour: Self.simpleMeter(beats: 4)
         case .fourFourTriplets: Self.tripletMeter(quarters: 4)
