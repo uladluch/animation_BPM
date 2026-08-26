@@ -139,24 +139,26 @@ private enum PendulumGeometry {
     static func rightX(_ size: CGSize) -> CGFloat { size.width - margin - beanWidth / 2 }
     static func midY(_ size: CGSize) -> CGFloat { size.height / 2 }
 
-    /// Положение света в заданный момент: одна четверть — один полный проход
-    /// от боба к бобу. Косинусное сглаживание даёт замедление у краёв и
-    /// максимальную скорость в центре, без скачка при смене направления.
-    /// Общая для метронома и вспышки — источник света всегда там, где он есть.
-    static func x(at time: Double, quarterInterval: Double, size: CGSize) -> CGFloat {
-        let quarter = Int(floor(time / quarterInterval))
-        let phase = (time - Double(quarter) * quarterInterval) / quarterInterval
+    /// Положение света по номеру четверти и фазе внутри неё: одна четверть —
+    /// один полный проход от боба к бобу. Косинусное сглаживание даёт
+    /// замедление у краёв и максимальную скорость в центре.
+    ///
+    /// Принимает четверть и фазу, а не абсолютное время, намеренно: субударный
+    /// интервал получается делением четверти, и обратное умножение промахивается
+    /// мимо границы на доли наносекунды. Через floor это превращается в
+    /// предыдущую четверть с фазой 0.999 — то есть в противоположный край.
+    static func x(quarter: Int, phase: Double, size: CGSize) -> CGFloat {
         let eased = 0.5 - 0.5 * cos(.pi * phase)
         let l = leftX(size)
         let span = rightX(size) - l
-        return quarter % 2 == 0 ? l + span * CGFloat(eased) : l + span * CGFloat(1 - eased)
+        return l + span * CGFloat(quarter % 2 == 0 ? eased : 1 - eased)
     }
 
-    /// Мгновенная скорость хода (0 у бобов, максимум в середине пролёта)
-    static func speed(at time: Double, quarterInterval: Double) -> Double {
-        let quarter = floor(time / quarterInterval)
-        let phase = (time - quarter * quarterInterval) / quarterInterval
-        return sin(.pi * phase)
+    /// То же для произвольного момента непрерывного времени (шлейф кометы)
+    static func x(at time: Double, quarterInterval: Double, size: CGSize) -> CGFloat {
+        let quarter = Int(floor(time / quarterInterval))
+        let phase = (time - Double(quarter) * quarterInterval) / quarterInterval
+        return x(quarter: quarter, phase: phase, size: size)
     }
 }
 
@@ -187,18 +189,24 @@ struct MetronomeFlashView: View {
             Canvas { context, size in
                 let beats = max(1, pattern.count)
                 let quarterInterval = 60.0 / Double(max(bpm, 1))
-                let subInterval = quarterInterval / Double(max(1, subdivision))
+                let subs = max(1, subdivision)
+                let subInterval = quarterInterval / Double(subs)
                 let t = max(0, timeline.date.timeIntervalSince(startDate))
-                let sinceHit = t.truncatingRemainder(dividingBy: subInterval)
-                let beatIndex = Int(t / subInterval)
+                // Субударная сетка выводится из четвертной, а не считается
+                // отдельно: иначе на границе четверти они расходятся
+                let quarterIndex = Int(t / quarterInterval)
+                let quarterPhase = (t - Double(quarterIndex) * quarterInterval) / quarterInterval
+                let subInQuarter = min(subs - 1, Int(quarterPhase * Double(subs)))
+                let sinceHit = (quarterPhase - Double(subInQuarter) / Double(subs)) * quarterInterval
+                let beatIndex = quarterIndex * subs + subInQuarter
                 let style = pattern[beatIndex % beats]
 
                 // Свет вспыхивает там, где он был в момент удара: на четвертной
-                // доле это край, на внутреннем субударе — точка на траектории.
+                // доле это ровно край, на внутреннем субударе — точка на пути.
                 // Край не вспыхивает, когда шарик летит между бобами.
                 let hitX = PendulumGeometry.x(
-                    at: Double(beatIndex) * subInterval,
-                    quarterInterval: quarterInterval,
+                    quarter: quarterIndex,
+                    phase: Double(subInQuarter) / Double(subs),
                     size: size
                 )
                 let hitCenter = CGPoint(x: hitX, y: PendulumGeometry.midY(size))
@@ -314,7 +322,6 @@ struct MetronomePendulumView: View {
                 let quarterInterval = 60.0 / Double(max(bpm, 1))
                 let subInterval = quarterInterval / Double(subs)
                 let t = max(0, timeline.date.timeIntervalSince(startDate))
-                let sinceHit = t.truncatingRemainder(dividingBy: subInterval)
 
                 let beats = max(1, pattern.count)
                 let barDuration = quarterInterval * Double(quartersPerBar)
@@ -498,12 +505,16 @@ struct MetronomePendulumView: View {
                 // касается только на них. Субудары ход не трогают.
                 let quarterIndex = Int(t / quarterInterval)
                 let phase = (t - Double(quarterIndex) * quarterInterval) / quarterInterval
-                let x = PendulumGeometry.x(at: t, quarterInterval: quarterInterval, size: size)
-                let speed = PendulumGeometry.speed(at: t, quarterInterval: quarterInterval)
+                let x = PendulumGeometry.x(quarter: quarterIndex, phase: phase, size: size)
+                let speed = sin(.pi * phase)
 
-                // Субудары: собственная сетка для щелчков и пульсаций
-                let subBeat = Int(t / subInterval)
-                let isMainBeat = subBeat % subs == 0
+                // Субудары выводятся из фазы четверти, а не из отдельного
+                // деления времени: так граница четверти для них ровно та же,
+                // и акцент не может «опоздать» на кадр
+                let subInQuarter = min(subs - 1, Int(phase * Double(subs)))
+                let subBeat = quarterIndex * subs + subInQuarter
+                let isMainBeat = subInQuarter == 0
+                let sinceHit = (phase - Double(subInQuarter) / Double(subs)) * quarterInterval
 
                 // Позиция в такте (с учётом count-in)
                 let currentBeat = subBeat % beats
@@ -564,13 +575,17 @@ struct MetronomePendulumView: View {
                     guard hitBeat >= 0 else { continue }
                     let hitStyle = style(ofBeat: hitBeat)
                     guard hitStyle.accent != .mute else { continue }
-                    let hitTime = Double(hitBeat) * subInterval
+                    let hitQuarter = hitBeat / subs
+                    let hitSub = hitBeat % subs
+                    let hitTime = Double(hitQuarter) * quarterInterval + Double(hitSub) * subInterval
                     let age = t - hitTime
                     guard age < waveDuration else { continue }
                     // Волна расходится оттуда, где свет был на этом ударе:
-                    // на четверти — от края, на субударе — из середины пути
+                    // на четверти — ровно от края, на субударе — из середины пути
                     let waveX = PendulumGeometry.x(
-                        at: hitTime, quarterInterval: quarterInterval, size: size
+                        quarter: hitQuarter,
+                        phase: Double(hitSub) / Double(subs),
+                        size: size
                     )
                     waves.append((CGPoint(x: waveX, y: midY), age, hitStyle))
                 }
