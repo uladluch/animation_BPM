@@ -274,28 +274,49 @@ struct MetronomePendulumView: View {
     /// свет отпрыгивает от боба и падает обратно, теряя высоту, как мяч.
     /// Так триоль читается самим движением, без единой лишней детали.
     private func flight(beat: Int, phase: Double, leftX: CGFloat, rightX: CGFloat) -> (x: CGFloat, speed: Double) {
-        let span = rightX - leftX
         let side = hitSide(ofBeat: beat)
-        let sub = subIndex(ofBeat: beat)
 
-        guard sub > 0 else {
+        guard subIndex(ofBeat: beat) > 0 else {
             // Косинусное сглаживание: у бобов свет замедляется, как маятник
+            let span = rightX - leftX
             let eased = 0.5 - 0.5 * cos(.pi * phase)
             let x = side == 0 ? leftX + span * CGFloat(eased) : rightX - span * CGFloat(eased)
             return (x, sin(.pi * phase))
         }
 
-        // Отскок: параболическая дуга внутрь, каждая следующая ниже —
-        // энергия уходит, и к началу новой доли свет затихает у боба
-        let beanX = side == 0 ? leftX : rightX
-        let inward: CGFloat = side == 0 ? 1 : -1
-        let amplitude = span * (sub == 1 ? 0.2 : 0.085)
-        let hop = 4 * phase * (1 - phase)
-        let x = beanX + inward * amplitude * CGFloat(hop)
-        // Скорость параболы линейна по фазе; масштабируем по высоте прыжка,
-        // чтобы вытягивание точки на отскоках было тише, чем в пролёте
-        let speed = min(1, abs(1 - 2 * phase) * Double(amplitude / (span * 0.5)))
-        return (x, speed)
+        // Триольные доли свет проводит внутри боба — наружу не вырывается,
+        // а отбивает их упругим стуком изнутри (см. knock)
+        return (side == 0 ? leftX : rightX, 0)
+    }
+
+    /// Размер света внутри боба на триольных долях. Схлопывание происходит
+    /// мгновенно, в самый удар: свет прилетает во всю ширину капсулы и тут же
+    /// собирается в плотное ядро — поэтому оба стука одинаково идут внутри
+    /// боба, а не распирают его наружу.
+    private func innerCore(beat: Int) -> CGFloat {
+        guard grouping > 1, subIndex(ofBeat: beat) > 0 else { return 1 }
+        return 0.48
+    }
+
+    /// Замах перед броском: на последней триольной доле ядро вытягивается
+    /// вдоль капсулы, набирая ход, и на щелчке раскрывается в полёт —
+    /// вспышка застаёт свет заряженным, а не растворившимся в бобе
+    private func charge(beat: Int, phase: Double) -> Double {
+        guard grouping > 1, subIndex(ofBeat: beat) == grouping - 1 else { return 0 }
+        return smooth((phase - 0.55) / 0.45)
+    }
+
+    /// Стук изнутри боба на триольных долях. Squash & stretch затухающей
+    /// пружины: пик сжатия приходится ровно на щелчок (phase = 0) — так же,
+    /// как пикуют вспышка и пульс боба, — затем свет распрямляется, чуть
+    /// перелетает в растяжение и к следующей доле затихает.
+    /// Второй стук тише — энергия уходит.
+    /// Отрицательное значение — сжатие, положительное — растяжение.
+    private func knock(beat: Int, phase: Double) -> Double {
+        let sub = subIndex(ofBeat: beat)
+        guard sub > 0 else { return 0 }
+        let spring = -exp(-phase * 3) * cos(2 * .pi * phase)
+        return spring * (sub == 1 ? 1 : 0.7)
     }
 
     /// Амплитуда пружинного пульса боба по силе удара
@@ -623,10 +644,14 @@ struct MetronomePendulumView: View {
                         nearestBeanX = beanX
                     }
 
-                    // Левый боб рождается на первом ударе (t = 0),
-                    // правый — когда точка впервые доезжает до него
-                    let bornTime = side == 0 ? 0 : interval
-                    let appear = smooth((t - bornTime) / 0.4)
+                    // Левый боб рождается на первом ударе, правый свет
+                    // вырисовывает по ходу первого пролёта: боб растёт вместе
+                    // с приближением точки и встречает её уже готовым. Так он
+                    // не пропадает на медленном темпе и не зависит от того,
+                    // звучит ли доля прилёта (в паузах удара нет вовсе).
+                    let appear = side == 0
+                        ? smooth(t / 0.4)
+                        : smooth(t / max(interval, 0.001))
                     guard appear > 0.001 else { continue }
 
                     // Последний удар по этому бобу: у триолей боб принимает
@@ -854,6 +879,32 @@ struct MetronomePendulumView: View {
                     let targetHeight = beanHeight * beanSizeTransition * (1 + 0.18 * targetInflate)
                     dotWidth += (targetWidth - dotWidth) * effectiveMorph
                     dotHeight += (targetHeight - dotHeight) * effectiveMorph
+                }
+
+                // Триольный стук: свет, слившийся с бобом, дважды упруго
+                // проседает внутри него — доли видно, но наружу он не рвётся.
+                // Ход намеренно несимметричный: глубокое сжатие на удар
+                // и едва заметная отдача, чтобы читался именно «тук» внутрь
+                // Свет не заливает капсулу целиком: собравшись в ядро,
+                // он оставляет боб видимым вокруг себя
+                let core = reduceMotion ? 1 : innerCore(beat: beatIndex)
+                dotWidth *= core
+                dotHeight *= core
+
+                // Замах: перед броском ядро вытягивается вдоль капсулы,
+                // оставаясь внутри неё, — и уходит в полёт на самом щелчке
+                let charged = reduceMotion ? 0 : charge(beat: beatIndex, phase: phase)
+                if charged > 0.001 {
+                    dotHeight *= CGFloat(1 + 0.45 * charged)
+                    dotWidth *= CGFloat(1 - 0.25 * charged)
+                }
+
+                let innerKnock = reduceMotion ? 0 : knock(beat: beatIndex, phase: phase)
+                if abs(innerKnock) > 0.001 {
+                    let squash = min(0, innerKnock)
+                    let rebound = max(0, innerKnock)
+                    dotHeight *= CGFloat(1 + 0.75 * squash + 0.15 * rebound)
+                    dotWidth *= CGFloat(1 - 0.28 * squash - 0.1 * rebound)
                 }
 
                 let attraction = nearestIsMute ? 0.0 : (effectiveMorph * effectiveMorph)

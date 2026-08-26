@@ -85,6 +85,9 @@ struct ContentView: View {
     @State private var metronomeTask: Task<Void, Never>?
     /// Момент старта метронома — от него считаются и звук, и анимация маятника
     @State private var metronomeStartDate: Date?
+    /// Текущий шаг сетки (длительность доли) — нужен, чтобы при смене темпа
+    /// пересчитать позицию в долях и не порвать синхронизацию
+    @State private var metronomeInterval: Double = 0
     /// Подсказка о выходе из фокус-режима (показывается по тапу)
     @State private var showExitHint = false
     /// Задача скрытия подсказки
@@ -202,7 +205,9 @@ struct ContentView: View {
                                 let isInCountIn: Bool = {
                                     guard let startDate = metronomeStartDate else { return false }
                                     let elapsed = timeline.date.timeIntervalSince(startDate)
-                                    let barDuration = 60.0 / Double(bpm) * Double(rhythmPreset.pattern.count)
+                                    // Доля пресета, а не четверть: у триолей она втрое короче
+                                    let beatDuration = 60.0 / Double(bpm * rhythmPreset.beatsPerQuarter)
+                                    let barDuration = beatDuration * Double(rhythmPreset.pattern.count)
                                     let countInDuration = barDuration * Double(countInMode.bars)
                                     return countInMode.bars > 0 && elapsed < countInDuration
                                 }()
@@ -213,9 +218,7 @@ struct ContentView: View {
                                         if bpmStepDidRepeatMinus {
                                             bpmStepDidRepeatMinus = false
                                         } else {
-                                            withAnimation(.smooth(duration: 0.25)) {
-                                                bpm = max(20, bpm - 5)
-                                            }
+                                            stepBPM(by: -5, duration: 0.25)
                                         }
                                     } label: {
                                         Text("-5")
@@ -252,9 +255,7 @@ struct ContentView: View {
                                         if bpmStepDidRepeatPlus {
                                             bpmStepDidRepeatPlus = false
                                         } else {
-                                            withAnimation(.smooth(duration: 0.25)) {
-                                                bpm = min(maxBPM, bpm + 5)
-                                            }
+                                            stepBPM(by: 5, duration: 0.25)
                                         }
                                     } label: {
                                         Text("+5")
@@ -418,9 +419,7 @@ struct ContentView: View {
                     } else {
                         bpmStepDidRepeatPlus = true
                     }
-                    withAnimation(.smooth(duration: 0.15)) {
-                        bpm = direction < 0 ? max(20, bpm - 5) : min(maxBPM, bpm + 5)
-                    }
+                    stepBPM(by: direction < 0 ? -5 : 5, duration: 0.15)
                 }
                 try? await Task.sleep(for: .seconds(0.12))
             }
@@ -475,19 +474,28 @@ struct ContentView: View {
     ///
     /// У триольного пресета доля втрое короче четверти — щелчки и маятник
     /// живут в одном ускоренном темпе, поэтому такт совпадает с обычным 4/4.
-    private func startMetronome() {
+    private func startMetronome(fromBeat startBeat: Int = 0, anchor: Date? = nil) {
         metronomeTask?.cancel()
-        let start = Date()
+        let start = anchor ?? Date()
+        let interval = 60.0 / Double(bpm * rhythmPreset.beatsPerQuarter)
         metronomeStartDate = start
+        metronomeInterval = interval
         let pattern = rhythmPreset.pattern
         let countInBeats = countInMode.bars * pattern.count
-        let playbackBPM = bpm * rhythmPreset.beatsPerQuarter
 
         metronomeTask = Task {
-            let interval = 60.0 / Double(playbackBPM)
-            var beat = 0
+            var beat = startBeat
 
             while !Task.isCancelled {
+                // Ждём момент доли по сетке — так продолжение после смены
+                // темпа попадает в неё же, без лишнего щелчка «вне очереди»
+                let due = start.addingTimeInterval(Double(beat) * interval)
+                let delay = due.timeIntervalSinceNow
+                if delay > 0 {
+                    try? await Task.sleep(for: .seconds(delay))
+                }
+                guard !Task.isCancelled else { break }
+
                 let absoluteBeat = beat - countInBeats
 
                 let clickID: SystemSoundID?
@@ -509,13 +517,31 @@ struct ContentView: View {
                     AudioServicesPlaySystemSound(clickID)
                 }
                 beat += 1
-                let next = start.addingTimeInterval(Double(beat) * interval)
-                let delay = next.timeIntervalSinceNow
-                if delay > 0 {
-                    try? await Task.sleep(for: .seconds(delay))
-                }
             }
         }
+    }
+
+    /// Смена темпа на ходу. Сетку не начинаем заново: пересчитываем якорь так,
+    /// чтобы текущая позиция в долях сохранилась, — тогда и щелчки, и маятник
+    /// просто меняют шаг, а не прыгают на другую долю.
+    private func retuneMetronome() {
+        guard isFocusMode, let start = metronomeStartDate, metronomeInterval > 0 else { return }
+        let now = Date()
+        let position = now.timeIntervalSince(start) / metronomeInterval
+        let interval = 60.0 / Double(bpm * rhythmPreset.beatsPerQuarter)
+        let anchor = now.addingTimeInterval(-position * interval)
+        startMetronome(fromBeat: Int(position.rounded(.up)), anchor: anchor)
+    }
+
+    /// Шаг темпа в фокус-режиме: меняем BPM и тут же перестраиваем сетку,
+    /// чтобы звук и анимация остались одним целым
+    private func stepBPM(by delta: Int, duration: Double) {
+        let updated = min(maxBPM, max(20, bpm + delta))
+        guard updated != bpm else { return }
+        withAnimation(.smooth(duration: duration)) {
+            bpm = updated
+        }
+        retuneMetronome()
     }
 
     /// Основной интерактивный блок с цифрой и подсказкой
