@@ -149,9 +149,9 @@ private enum PendulumGeometry {
     static func midY(_ size: CGSize) -> CGFloat { size.height / 2 }
 
     /// Насколько точка останавливается, не доходя до центра боба: полуширина
-    /// раздутого ударом боба плюс радиус самой точки. Свет бьёт в грань
-    /// капсулы и внутрь неё не заходит.
-    static let contactInset: CGFloat = beanWidth / 2 * 1.55 + 11
+    /// спокойной капсулы плюс радиус самой точки. Свет ложится ровно на грань,
+    /// касаясь её, но внутрь не заходит.
+    static let contactInset: CGFloat = beanWidth / 2 + 11
 
     static func contactLeftX(_ size: CGSize) -> CGFloat { leftX(size) + contactInset }
     static func contactRightX(_ size: CGSize) -> CGFloat { rightX(size) - contactInset }
@@ -683,15 +683,26 @@ struct MetronomePendulumView: View {
 
                     let scale = CGFloat(appear * (1 + pulse))
 
-                    // Взрыв: боб ничего не предвкушает и на подлёте стоит
-                    // спокойно — его распирает в момент попадания и тут же
-                    // отпускает. Резкий фронт даёт удар, а не наплыв.
-                    let burst = wasHit ? CGFloat(exp(-sinceOwnHit / 0.1)) : 0
-                    let width = beanWidth * beanSizeTransition * (1 + 0.55 * burst) * scale
-                    let height = beanHeight * beanSizeTransition * (1 + 0.18 * burst) * scale
+                    // Контакт: боб на подлёте стоит спокойно, а удар принимает
+                    // телом — сначала его вдавливает (уже и выше), затем он
+                    // отпружинивает с перелётом и оседает. Разность экспонент
+                    // даёт естественную двухфазность: сжатие, потом отдача.
+                    let squash = wasHit ? exp(-sinceOwnHit / 0.04) : 0
+                    let reboundRaw = wasHit
+                        ? exp(-sinceOwnHit / 0.07) - exp(-sinceOwnHit / 0.04)
+                        : 0
+                    let rebound = max(0, reboundRaw) / 0.203
+
+                    let widthFactor = 1 - 0.26 * squash + 0.5 * rebound
+                    let heightFactor = 1 + 0.2 * squash - 0.08 * rebound
+                    let width = beanWidth * beanSizeTransition * CGFloat(widthFactor) * scale
+                    let height = beanHeight * beanSizeTransition * CGFloat(heightFactor) * scale
+
+                    // Отдача: под ударом боб подаётся прочь от точки и возвращается
+                    let recoil = CGFloat(squash * 7) * (side == 0 ? -1 : 1)
 
                     let rect = CGRect(
-                        x: beanX - width / 2, y: midY - height / 2,
+                        x: beanX + recoil - width / 2, y: midY - height / 2,
                         width: width, height: height
                     )
                     let bean = Path(roundedRect: rect, cornerRadius: min(width, height) / 2)
