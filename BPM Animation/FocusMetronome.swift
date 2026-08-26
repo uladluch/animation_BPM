@@ -877,10 +877,14 @@ struct MetronomePendulumView: View {
                 var dotHeight = dotDiameter / CGFloat(stretch)
 
                 // Удар о боб: на контакте точка расплющивается о капсулу и
-                // упруго восстанавливается, как мяч о стену. Траектория одна
-                // для всех долей — беззвучная отличается лишь тем, что боб
-                // остаётся серым и не поддаётся удару
-                let impact = exp(-(phase < 0.5 ? phase : 1 - phase) * quarterInterval / 0.06)
+                // упруго восстанавливается, как мяч о стену. На беззвучной доле
+                // удара нет вовсе — бить не обо что, поэтому точка не пружинит,
+                // а просто разворачивается. Траектория при этом одна для всех.
+                let impactQuarter = phase < 0.5 ? quarterIndex : quarterIndex + 1
+                let strikes = style(ofQuarter: impactQuarter).accent != .mute
+                let impact = strikes
+                    ? exp(-(phase < 0.5 ? phase : 1 - phase) * quarterInterval / 0.06)
+                    : 0
                 if impact > 0.01, !reduceMotion {
                     dotWidth *= CGFloat(1 - 0.42 * impact)
                     dotHeight *= CGFloat(1 + 0.3 * impact)
