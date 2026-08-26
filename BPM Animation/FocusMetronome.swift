@@ -512,6 +512,13 @@ struct MetronomePendulumView: View {
                 let isMainBeat = subInQuarter == 0
                 let sinceHit = (phase - Double(subInQuarter) / Double(subs)) * quarterInterval
 
+                // Импульс субудара считаем один раз: его несут и летящая точка,
+                // и активный индикатор. Беззвучный субудар импульса не даёт.
+                let subStyle = style(ofBeat: subBeat)
+                let subHit = (subs > 1 && !isMainBeat && subStyle.accent != .mute)
+                    ? subPulse(sinceHit: sinceHit, subInterval: subInterval)
+                    : 0
+
                 // Позиция в такте (с учётом count-in)
                 let currentBeat = subBeat % beats
                 let currentQuarter = quarterIndex % quartersPerBar
@@ -741,6 +748,9 @@ struct MetronomePendulumView: View {
                 for beat in 0..<indicatorCount {
                     let beatStyle = style(ofQuarter: beat)
                     let heat = beat == currentIndicator ? exp(-sinceIndicatorHit / 0.35) : 0
+                    // Субудары отзываются внутри активной доли — короче и слабее
+                    // четвертного отклика, и сам индикатор они не переключают
+                    let subHeat = beat == currentIndicator ? subHit : 0
 
                     var miniWidth: CGFloat
                     var miniHeight: CGFloat
@@ -759,7 +769,7 @@ struct MetronomePendulumView: View {
                         miniHeight = 22
                     }
                     // На своей доле мини-боб подрастает и вспыхивает
-                    let grow = CGFloat(1 + 0.25 * heat)
+                    let grow = CGFloat(1 + 0.25 * heat + 0.16 * subHeat)
                     miniWidth *= grow
                     miniHeight *= grow
 
@@ -779,7 +789,7 @@ struct MetronomePendulumView: View {
                     switch beatStyle.accent {
                     case .mute:
                         // Пауза — пустой сплющенный контур
-                        let strokeOpacity: Double = isActive ? (0.3 + 0.5 * heat) * rowAppear : (indicatorsOnTop ? 0.35 * rowAppear : (0.3 + 0.5 * heat) * rowAppear)
+                        let strokeOpacity: Double = isActive ? (0.3 + 0.5 * heat + 0.3 * subHeat) * rowAppear : (indicatorsOnTop ? 0.35 * rowAppear : (0.3 + 0.5 * heat) * rowAppear)
                         context.stroke(
                             miniBean,
                             with: .color(baseColor.opacity(strokeOpacity)),
@@ -793,7 +803,7 @@ struct MetronomePendulumView: View {
                         case .medium: 0.3
                         default: 0.25
                         }
-                        let activeOpacity = min(1, activeBase + 0.55 * heat) * rowAppear
+                        let activeOpacity = min(1, activeBase + 0.55 * heat + 0.3 * subHeat) * rowAppear
                         let passiveOpacity = indicatorsOnTop ? (0.38 * rowAppear) : activeOpacity
                         let finalOpacity = isActive ? activeOpacity : passiveOpacity
                         context.fill(
@@ -882,10 +892,6 @@ struct MetronomePendulumView: View {
                 // Она сжимается поперёк курса и раздаётся вдоль него — толчок
                 // в спину, — но ни курса, ни скорости это не меняет.
                 // Беззвучный субудар импульса не даёт, время внутри четверти идёт.
-                let subStyle = style(ofBeat: subBeat)
-                let subHit = (subs > 1 && !isMainBeat && subStyle.accent != .mute)
-                    ? subPulse(sinceHit: sinceHit, subInterval: subInterval)
-                    : 0
                 if subHit > 0.001, !reduceMotion {
                     dotHeight *= CGFloat(1 - 0.3 * subHit)
                     dotWidth *= CGFloat(1 + 0.42 * subHit)
