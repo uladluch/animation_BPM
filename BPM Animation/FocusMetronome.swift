@@ -47,6 +47,7 @@ enum RhythmPreset: String, CaseIterable, Identifiable {
     case sixEight = "6/8"
     case twelveEight = "12/8"
     case pausePause = "Pause Pause"
+    case pauseStart = "Pause Start"
     case fourFourTriplets = "4/4 Triplets"
     case experimental = "Experimental"
 
@@ -77,6 +78,15 @@ enum RhythmPreset: String, CaseIterable, Identifiable {
                 BeatStyle(accent: .strong),
                 BeatStyle(accent: .mute),
                 BeatStyle(accent: .mute),
+                BeatStyle(accent: .medium)
+            ]
+        case .pauseStart:
+            // 4/4: такт начинается с двух пауз — маятник эти две доли ходит
+            // вхолостую, бобы молчат, — и вступает на третьей
+            [
+                BeatStyle(accent: .mute),
+                BeatStyle(accent: .mute),
+                BeatStyle(accent: .strong),
                 BeatStyle(accent: .medium)
             ]
         case .experimental:
