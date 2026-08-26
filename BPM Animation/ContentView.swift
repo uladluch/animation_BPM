@@ -167,10 +167,10 @@ struct ContentView: View {
                             // Вспышка — отдельный слой: не сжимается при удержании
                             MetronomeFlashView(
                                 startDate: metronomeStartDate ?? Date(),
-                                bpm: bpm * rhythmPreset.beatsPerQuarter,
+                                bpm: bpm,
                                 pattern: rhythmPreset.pattern,
                                 flashBrightness: flashBrightness,
-                                beatsPerIndicator: rhythmPreset.beatsPerQuarter
+                                subdivision: rhythmPreset.subdivision
                             )
                             // Для Focus Mode 3 (индикаторы сверху + постоянная подсказка)
                             // поднимаем ряд индикаторов выше: отступ сверху равен
@@ -180,7 +180,7 @@ struct ContentView: View {
                                 : nil
                             MetronomePendulumView(
                                 startDate: metronomeStartDate ?? Date(),
-                                bpm: bpm * rhythmPreset.beatsPerQuarter,
+                                bpm: bpm,
                                 pattern: rhythmPreset.pattern,
                                 indicatorsOnTop: focusIndicatorsOnTop,
                                 topIndicatorY: topIndicatorYOverride,
@@ -188,7 +188,7 @@ struct ContentView: View {
                                 barCounterBars: barCounterBars,
                                 barCounterMinutes: barCounterMinutes,
                                 countInBars: countInMode.bars,
-                                beatsPerIndicator: rhythmPreset.beatsPerQuarter
+                                subdivision: rhythmPreset.subdivision
                             )
                             // Хореография выхода: пока палец держит, метроном сжимается
                             // и темнеет; отпустил раньше — упруго возвращается
@@ -205,9 +205,10 @@ struct ContentView: View {
                                 let isInCountIn: Bool = {
                                     guard let startDate = metronomeStartDate else { return false }
                                     let elapsed = timeline.date.timeIntervalSince(startDate)
-                                    // Доля пресета, а не четверть: у триолей она втрое короче
-                                    let beatDuration = 60.0 / Double(bpm * rhythmPreset.beatsPerQuarter)
-                                    let barDuration = beatDuration * Double(rhythmPreset.pattern.count)
+                                    // Такт считаем четвертями: деление на субудары
+                                    // его длину не меняет
+                                    let quarterDuration = 60.0 / Double(bpm)
+                                    let barDuration = quarterDuration * Double(rhythmPreset.quartersPerBar)
                                     let countInDuration = barDuration * Double(countInMode.bars)
                                     return countInMode.bars > 0 && elapsed < countInDuration
                                 }()
@@ -472,12 +473,13 @@ struct ContentView: View {
     /// от точки старта — без накопления дрейфа. Count-in использует
     /// упрощённые щелчки (только единица такта звучит громко).
     ///
-    /// У триольного пресета доля втрое короче четверти — щелчки и маятник
-    /// живут в одном ускоренном темпе, поэтому такт совпадает с обычным 4/4.
+    /// Щелчки идут по субударной сетке (у триолей — втрое чаще четверти),
+    /// тогда как маятник ходит четвертями: обе сетки растут из одного якоря.
     private func startMetronome(fromBeat startBeat: Int = 0, anchor: Date? = nil) {
         metronomeTask?.cancel()
         let start = anchor ?? Date()
-        let interval = 60.0 / Double(bpm * rhythmPreset.beatsPerQuarter)
+        let subdivision = rhythmPreset.subdivision
+        let interval = 60.0 / Double(bpm * subdivision)
         metronomeStartDate = start
         metronomeInterval = interval
         let pattern = rhythmPreset.pattern
@@ -500,9 +502,13 @@ struct ContentView: View {
 
                 let clickID: SystemSoundID?
                 if beat < countInBeats {
-                    // Count-in: особые щелчки — 1306 для единицы такта, 1105 для остальных
-                    let isBarStart = beat % pattern.count == 0
-                    clickID = isBarStart ? 1306 : 1105
+                    // Count-in озвучивает четвертные доли: 1306 на единицу такта,
+                    // 1105 на остальные; субудары внутри четверти молчат
+                    if beat % subdivision != 0 {
+                        clickID = nil
+                    } else {
+                        clickID = beat % pattern.count == 0 ? 1306 : 1105
+                    }
                 } else {
                     // Обычный метроном: следуем pattern
                     clickID = switch pattern[absoluteBeat % pattern.count].accent {
@@ -528,7 +534,7 @@ struct ContentView: View {
         guard isFocusMode, let start = metronomeStartDate, metronomeInterval > 0 else { return }
         let now = Date()
         let position = now.timeIntervalSince(start) / metronomeInterval
-        let interval = 60.0 / Double(bpm * rhythmPreset.beatsPerQuarter)
+        let interval = 60.0 / Double(bpm * rhythmPreset.subdivision)
         let anchor = now.addingTimeInterval(-position * interval)
         startMetronome(fromBeat: Int(position.rounded(.up)), anchor: anchor)
     }
