@@ -657,14 +657,9 @@ struct MetronomePendulumView: View {
                 for side in 0..<2 {
                     let beanX = side == 0 ? leftX : rightX
 
-                    // Левый боб рождается на первом ударе, правый свет
-                    // вырисовывает по ходу первого пролёта: боб растёт вместе
-                    // с приближением точки и встречает её уже готовым. Так он
-                    // не пропадает на медленном темпе и не зависит от того,
-                    // звучит ли доля прилёта (в паузах удара нет вовсе).
-                    let appear = side == 0
-                        ? smooth(t / 0.4)
-                        : smooth(t / max(quarterInterval, 0.001))
+                    // Оба боба проявляются вместе: сцена собирается целиком,
+                    // а не достраивается на глазах по мере первого пролёта
+                    let appear = smooth(t / 0.4)
                     guard appear > 0.001 else { continue }
 
                     // Боб принимает только четвертные доли: левый — чётные,
@@ -687,9 +682,17 @@ struct MetronomePendulumView: View {
                     // телом — сначала его вдавливает (уже и выше), затем он
                     // отпружинивает с перелётом и оседает. Разность экспонент
                     // даёт естественную двухфазность: сжатие, потом отдача.
-                    let squash = wasHit ? exp(-sinceOwnHit / 0.04) : 0
+                    // Насколько боб податлив: беззвучный — камень, удар его
+                    // не деформирует, свет просто отскакивает прочь
+                    let give: Double = switch ownStyle.accent {
+                    case .mute: 0
+                    case .weak: 0.55
+                    case .medium: 0.85
+                    case .strong: 1.0
+                    }
+                    let squash = wasHit ? exp(-sinceOwnHit / 0.04) * give : 0
                     let reboundRaw = wasHit
-                        ? exp(-sinceOwnHit / 0.07) - exp(-sinceOwnHit / 0.04)
+                        ? (exp(-sinceOwnHit / 0.07) - exp(-sinceOwnHit / 0.04)) * give
                         : 0
                     let rebound = max(0, reboundRaw) / 0.203
 
@@ -885,12 +888,17 @@ struct MetronomePendulumView: View {
                 var dotWidth = dotDiameter * CGFloat(stretch)
                 var dotHeight = dotDiameter / CGFloat(stretch)
 
-                // Удар о боб: на самом контакте точка расплющивается о капсулу
-                // и упруго восстанавливается, как мяч о стену
-                let impact = exp(-(phase < 0.5 ? phase : 1 - phase) * quarterInterval / 0.06)
+                // Удар о боб: на контакте точка расплющивается о капсулу и
+                // упруго восстанавливается, как мяч о стену. О беззвучный боб
+                // отскок жёстче: камень удар не принимает, всё уходит в точку
+                let impactQuarter = phase < 0.5 ? quarterIndex : quarterIndex + 1
+                let hitsStone = style(ofQuarter: impactQuarter).accent == .mute
+                let impactDecay = hitsStone ? 0.045 : 0.06
+                let impact = exp(-(phase < 0.5 ? phase : 1 - phase) * quarterInterval / impactDecay)
                 if impact > 0.01, !reduceMotion {
-                    dotWidth *= CGFloat(1 - 0.42 * impact)
-                    dotHeight *= CGFloat(1 + 0.3 * impact)
+                    let bounce = hitsStone ? 1.3 : 1.0
+                    dotWidth *= CGFloat(1 - 0.42 * impact * bounce)
+                    dotHeight *= CGFloat(1 + 0.3 * impact * bounce)
                 }
 
                 // Импульс субудара: тычок по летящей точке там, где она сейчас.
