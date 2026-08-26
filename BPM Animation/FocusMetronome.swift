@@ -164,35 +164,18 @@ private enum PendulumGeometry {
     /// интервал получается делением четверти, и обратное умножение промахивается
     /// мимо границы на доли наносекунды. Через floor это превращается в
     /// предыдущую четверть с фазой 0.999 — то есть в противоположный край.
-    /// `startInset`/`endInset` — насколько не долетать до центра боба на
-    /// каждом конце пролёта. По умолчанию свет встаёт на грань капсулы;
-    /// ноль означает, что он заходит внутрь, к самому центру.
-    static func x(
-        quarter: Int,
-        phase: Double,
-        size: CGSize,
-        startInset: CGFloat = contactInset,
-        endInset: CGFloat = contactInset
-    ) -> CGFloat {
+    static func x(quarter: Int, phase: Double, size: CGSize) -> CGFloat {
         let eased = 0.5 - 0.5 * cos(.pi * phase)
-        let l = leftX(size)
-        let r = rightX(size)
-        let from = quarter % 2 == 0 ? l + startInset : r - startInset
-        let to = quarter % 2 == 0 ? r - endInset : l + endInset
-        return from + (to - from) * CGFloat(eased)
+        let l = contactLeftX(size)
+        let span = contactRightX(size) - l
+        return l + span * CGFloat(quarter % 2 == 0 ? eased : 1 - eased)
     }
 
     /// То же для произвольного момента непрерывного времени (шлейф кометы)
-    static func x(
-        at time: Double,
-        quarterInterval: Double,
-        size: CGSize,
-        startInset: CGFloat = contactInset,
-        endInset: CGFloat = contactInset
-    ) -> CGFloat {
+    static func x(at time: Double, quarterInterval: Double, size: CGSize) -> CGFloat {
         let quarter = Int(floor(time / quarterInterval))
         let phase = (time - Double(quarter) * quarterInterval) / quarterInterval
-        return x(quarter: quarter, phase: phase, size: size, startInset: startInset, endInset: endInset)
+        return x(quarter: quarter, phase: phase, size: size)
     }
 }
 
@@ -325,31 +308,6 @@ struct MetronomePendulumView: View {
     /// Стиль четвертной доли — по её первому субудару
     private func style(ofQuarter quarter: Int) -> BeatStyle {
         style(ofBeat: quarter * subs)
-    }
-
-    /// Насколько свет не долетает до центра боба на этой четверти: в звучащую
-    /// долю он бьёт в грань, а беззвучную проходит насквозь — бить не обо что,
-    /// поэтому он спокойно влетает внутрь капсулы
-    private func inset(forQuarter quarter: Int) -> CGFloat {
-        style(ofQuarter: quarter).accent == .mute ? 0 : PendulumGeometry.contactInset
-    }
-
-    /// Положение света с учётом того, звучат ли доли на концах пролёта
-    private func lightX(quarter: Int, phase: Double, size: CGSize) -> CGFloat {
-        PendulumGeometry.x(
-            quarter: quarter,
-            phase: phase,
-            size: size,
-            startInset: inset(forQuarter: quarter),
-            endInset: inset(forQuarter: quarter + 1)
-        )
-    }
-
-    /// То же для произвольного момента непрерывного времени (шлейф кометы)
-    private func lightX(at time: Double, quarterInterval: Double, size: CGSize) -> CGFloat {
-        let quarter = Int(floor(time / quarterInterval))
-        let phase = (time - Double(quarter) * quarterInterval) / quarterInterval
-        return lightX(quarter: quarter, phase: phase, size: size)
     }
 
     /// Импульс субудара: короткий толчок с пиком ровно на щелчке, гаснет
@@ -560,7 +518,7 @@ struct MetronomePendulumView: View {
                 // касается только на них. Субудары ход не трогают.
                 let quarterIndex = Int(t / quarterInterval)
                 let phase = (t - Double(quarterIndex) * quarterInterval) / quarterInterval
-                let x = lightX(quarter: quarterIndex, phase: phase, size: size)
+                let x = PendulumGeometry.x(quarter: quarterIndex, phase: phase, size: size)
                 let speed = sin(.pi * phase)
 
                 // Субудары выводятся из фазы четверти, а не из отдельного
@@ -616,7 +574,7 @@ struct MetronomePendulumView: View {
                     guard age < waveDuration else { continue }
                     // Волна расходится оттуда, где свет был на этом ударе:
                     // на четверти — ровно от края, на субударе — из середины пути
-                    let waveX = lightX(
+                    let waveX = PendulumGeometry.x(
                         quarter: hitQuarter,
                         phase: Double(hitSub) / Double(subs),
                         size: size
@@ -878,7 +836,9 @@ struct MetronomePendulumView: View {
                     for ghost in 1...4 {
                         let ghostTime = t - Double(ghost) * 0.022
                         guard ghostTime >= 0 else { break }
-                        let gX = lightX(at: ghostTime, quarterInterval: quarterInterval, size: size)
+                        let gX = PendulumGeometry.x(
+                            at: ghostTime, quarterInterval: quarterInterval, size: size
+                        )
                         let gRadius = 8 - CGFloat(ghost) * 1.3
                         let gOpacity = 0.05 * (1 - Double(ghost) / 5) * speed
                         let gRect = CGRect(
@@ -907,13 +867,10 @@ struct MetronomePendulumView: View {
                 var dotHeight = dotDiameter / CGFloat(stretch)
 
                 // Удар о боб: на контакте точка расплющивается о капсулу и
-                // упруго восстанавливается, как мяч о стену. Беззвучную долю
-                // она проходит насквозь — там нет удара, значит нет и отскока
-                let impactQuarter = phase < 0.5 ? quarterIndex : quarterIndex + 1
-                let sounds = style(ofQuarter: impactQuarter).accent != .mute
-                let impact = sounds
-                    ? exp(-(phase < 0.5 ? phase : 1 - phase) * quarterInterval / 0.06)
-                    : 0
+                // упруго восстанавливается, как мяч о стену. Траектория одна
+                // для всех долей — беззвучная отличается лишь тем, что боб
+                // остаётся серым и не поддаётся удару
+                let impact = exp(-(phase < 0.5 ? phase : 1 - phase) * quarterInterval / 0.06)
                 if impact > 0.01, !reduceMotion {
                     dotWidth *= CGFloat(1 - 0.42 * impact)
                     dotHeight *= CGFloat(1 + 0.3 * impact)
