@@ -46,6 +46,7 @@ enum RhythmPreset: String, CaseIterable, Identifiable {
     case twoFour = "2/4"
     case sixEight = "6/8"
     case twelveEight = "12/8"
+    case pausePause = "Pause Pause"
     case experimental = "Experimental"
 
     var id: String { rawValue }
@@ -58,6 +59,14 @@ enum RhythmPreset: String, CaseIterable, Identifiable {
         case .twoFour: Self.simpleMeter(beats: 2)
         case .sixEight: Self.compoundMeter(beats: 6, groupSize: 3)
         case .twelveEight: Self.compoundMeter(beats: 12, groupSize: 3)
+        case .pausePause:
+            // 4/4: сильная доля, две паузы подряд, затем обычная доля
+            [
+                BeatStyle(accent: .strong),
+                BeatStyle(accent: .mute),
+                BeatStyle(accent: .mute),
+                BeatStyle(accent: .medium)
+            ]
         case .experimental:
             // Джент в духе Meshuggah: такт из 16 шестнадцатых,
             // удары группами 2+3+2+3+3+3 (старты групп), между ними тишина.

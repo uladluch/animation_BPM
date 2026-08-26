@@ -809,12 +809,13 @@ struct MetronomeSettingsSheet: View {
             Form {
                 // Выбор ритма
                 Section {
-                    Picker("Rhythm", selection: $rhythmPreset) {
+                    Picker("", selection: $rhythmPreset) {
                         ForEach(RhythmPreset.allCases) { preset in
                             Text(preset.rawValue).tag(preset)
                         }
                     }
                     .pickerStyle(.inline)
+                    .labelsHidden()
                 } header: {
                     Text("Rhythm")
                 }
