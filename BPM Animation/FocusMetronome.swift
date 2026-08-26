@@ -681,20 +681,19 @@ struct MetronomePendulumView: View {
                     let wasHit = lastOwnQuarter >= 0
                     // Пружинный пульс по силе удара: сильная доля бьёт плотнее,
                     // беззвучная проходит без пульса
-                    let ownAccent = style(ofQuarter: lastOwnQuarter).accent
+                    let ownStyle = style(ofQuarter: lastOwnQuarter)
                     let pulse = wasHit
-                        ? exp(-sinceOwnHit / 0.16) * cos(sinceOwnHit * 18) * pulseAmplitude(for: ownAccent)
+                        ? exp(-sinceOwnHit / 0.16) * cos(sinceOwnHit * 18) * pulseAmplitude(for: ownStyle.accent)
                         : 0
 
                     let scale = CGFloat(appear * (1 + pulse))
-                    let proximity = max(0, 1 - distance / meltRange)
 
-                    // Предвкушение: боб замечает точку на подлёте (радиус 70pt)
+                    // Предвкушение: боб замечает точку у самого подлёта (58pt)
                     // и раздувается — сильнее вширь, чуть-чуть в рост.
                     // Кривая крутая: почти весь рост приходится на последние
                     // пункты пути, чтобы удар читался как удар, а не как наплыв
-                    let reach = max(0, 1 - Double(distance) / 70)
-                    let inflate = CGFloat(pow(reach, 2.6))
+                    let reach = max(0, 1 - Double(distance) / 58)
+                    let inflate = CGFloat(pow(reach, 3.4))
                     let width = beanWidth * beanSizeTransition * (1 + 0.55 * inflate) * scale
                     let height = beanHeight * beanSizeTransition * (1 + 0.18 * inflate) * scale
 
@@ -716,20 +715,24 @@ struct MetronomePendulumView: View {
                     let base = nearestIsMute ? 0.22 : (0.22 + 0.3 * barHeat)
                     context.fill(bean, with: .color(.white.opacity(base * appear)))
 
-                    // При приближении точки боб разгорается в цвете своей доли —
-                    // яркость строго по иерархии акцентов: пауза не светится,
-                    // слабый — вполсилы, сильный — ярче обычного
-                    if proximity > 0.01, nearestHitStyle.accent != .mute {
-                        let glowScale: Double = switch nearestHitStyle.accent {
+                    // Цвет — событие удара, а не подлёта: боб растёт и раздувается
+                    // серым, а вспыхивает своим цветом ровно в момент попадания
+                    // и тут же гаснет. Яркость по иерархии акцентов: пауза
+                    // не светится, слабый — вполсилы, сильный — ярче обычного
+                    if wasHit, ownStyle.accent != .mute {
+                        let glowScale: Double = switch ownStyle.accent {
                         case .weak: 0.5
                         case .strong: 1.15
                         default: 1.0
                         }
-                        let glow = min(0.95, pow(proximity, 2.6) * glowScale)
-                        context.fill(
-                            bean,
-                            with: .color(nearestHitStyle.color.opacity(glow * appear))
-                        )
+                        let ignite = exp(-sinceOwnHit / 0.18)
+                        let glow = min(0.95, ignite * glowScale)
+                        if glow > 0.01 {
+                            context.fill(
+                                bean,
+                                with: .color(ownStyle.color.opacity(glow * appear))
+                            )
+                        }
                     }
                 }
 
