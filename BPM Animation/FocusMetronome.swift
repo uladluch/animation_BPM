@@ -53,12 +53,14 @@ enum RhythmPreset: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    /// Рисунок такта: стиль каждой доли. Первая доля такта всегда выделена
+    /// Рисунок такта: стиль каждой доли. Первая звучащая доля такта выделена
     /// цветом — так «раз» видно и по бобу, в который свет приходит, и по вспышке.
+    /// Метка идёт именно на звучащую: если такт открывают паузы, красить нечего —
+    /// они не дают ни вспышки, ни отклика боба.
     var pattern: [BeatStyle] {
         var beats = basePattern
-        if !beats.isEmpty {
-            beats[0].color = .beatLime
+        if let downbeat = beats.firstIndex(where: { $0.accent != .mute }) {
+            beats[downbeat].color = .beatLime
         }
         return beats
     }
