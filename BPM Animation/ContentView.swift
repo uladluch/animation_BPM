@@ -164,9 +164,10 @@ struct ContentView: View {
                             // Вспышка — отдельный слой: не сжимается при удержании
                             MetronomeFlashView(
                                 startDate: metronomeStartDate ?? Date(),
-                                bpm: bpm,
+                                bpm: bpm * rhythmPreset.beatsPerQuarter,
                                 pattern: rhythmPreset.pattern,
-                                flashBrightness: flashBrightness
+                                flashBrightness: flashBrightness,
+                                beatsPerIndicator: rhythmPreset.beatsPerQuarter
                             )
                             // Для Focus Mode 3 (индикаторы сверху + постоянная подсказка)
                             // поднимаем ряд индикаторов выше: отступ сверху равен
@@ -176,14 +177,15 @@ struct ContentView: View {
                                 : nil
                             MetronomePendulumView(
                                 startDate: metronomeStartDate ?? Date(),
-                                bpm: bpm,
+                                bpm: bpm * rhythmPreset.beatsPerQuarter,
                                 pattern: rhythmPreset.pattern,
                                 indicatorsOnTop: focusIndicatorsOnTop,
                                 topIndicatorY: topIndicatorYOverride,
                                 barCounterMode: barCounterMode,
                                 barCounterBars: barCounterBars,
                                 barCounterMinutes: barCounterMinutes,
-                                countInBars: countInMode.bars
+                                countInBars: countInMode.bars,
+                                beatsPerIndicator: rhythmPreset.beatsPerQuarter
                             )
                             // Хореография выхода: пока палец держит, метроном сжимается
                             // и темнеет; отпустил раньше — упруго возвращается
@@ -470,21 +472,24 @@ struct ContentView: View {
     /// на проде заменятся своими). Каждый следующий удар планируем
     /// от точки старта — без накопления дрейфа. Count-in использует
     /// упрощённые щелчки (только единица такта звучит громко).
+    ///
+    /// У триольного пресета доля втрое короче четверти — щелчки и маятник
+    /// живут в одном ускоренном темпе, поэтому такт совпадает с обычным 4/4.
     private func startMetronome() {
         metronomeTask?.cancel()
         let start = Date()
         metronomeStartDate = start
         let pattern = rhythmPreset.pattern
         let countInBeats = countInMode.bars * pattern.count
-        
+        let playbackBPM = bpm * rhythmPreset.beatsPerQuarter
+
         metronomeTask = Task {
-            let interval = 60.0 / Double(bpm)
+            let interval = 60.0 / Double(playbackBPM)
             var beat = 0
-            
+
             while !Task.isCancelled {
                 let absoluteBeat = beat - countInBeats
-                
-                // Звук: count-in использует особые щелчки, основной метроном — pattern
+
                 let clickID: SystemSoundID?
                 if beat < countInBeats {
                     // Count-in: особые щелчки — 1306 для единицы такта, 1105 для остальных
@@ -499,7 +504,7 @@ struct ContentView: View {
                     case .strong: 1103    // звонкий акцентный «Tink»
                     }
                 }
-                
+
                 if let clickID {
                     AudioServicesPlaySystemSound(clickID)
                 }

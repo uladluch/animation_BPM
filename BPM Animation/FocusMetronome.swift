@@ -47,14 +47,17 @@ enum RhythmPreset: String, CaseIterable, Identifiable {
     case sixEight = "6/8"
     case twelveEight = "12/8"
     case pausePause = "Pause Pause"
+    case fourFourTriplets = "4/4 Triplets"
     case experimental = "Experimental"
 
     var id: String { rawValue }
 
-    /// Рисунок такта: стиль каждой доли
+    /// Рисунок такта: стиль каждой доли.
+    /// Маятник «пролетает» по одному разу на элемент паттерна.
     var pattern: [BeatStyle] {
         switch self {
         case .fourFour: Self.simpleMeter(beats: 4)
+        case .fourFourTriplets: Self.tripletMeter(quarters: 4)
         case .threeFour: Self.simpleMeter(beats: 3)
         case .twoFour: Self.simpleMeter(beats: 2)
         case .sixEight: Self.compoundMeter(beats: 6, groupSize: 3)
@@ -75,9 +78,28 @@ enum RhythmPreset: String, CaseIterable, Identifiable {
         }
     }
 
+    /// Во сколько раз доля пресета короче вводимой четверти.
+    /// У триолей маятник летает втрое чаще, поэтому такт по длине
+    /// совпадает с обычным 4/4 — три пролёта укладываются в одну четверть.
+    var beatsPerQuarter: Int {
+        switch self {
+        case .fourFourTriplets: 3
+        default: 1
+        }
+    }
+
     /// Простой размер: сильная первая доля, остальные обычные
     private static func simpleMeter(beats: Int) -> [BeatStyle] {
         (0..<beats).map { BeatStyle(accent: $0 == 0 ? .strong : .medium) }
+    }
+
+    /// Триольное деление: каждая четверть — три пролёта маятника.
+    /// Начало четверти акцентировано, два внутренних удара тише.
+    private static func tripletMeter(quarters: Int) -> [BeatStyle] {
+        (0..<quarters * 3).map { index in
+            guard index % 3 == 0 else { return BeatStyle(accent: .weak) }
+            return BeatStyle(accent: index == 0 ? .strong : .medium)
+        }
     }
 
     /// Составной размер: сильная доля в начале каждой группы восьмых
@@ -123,6 +145,9 @@ struct MetronomeFlashView: View {
     let bpm: Int
     let pattern: [BeatStyle]
     let flashBrightness: Double
+    /// Долей паттерна на одну долю маятника — чтобы вспышка светила
+    /// из того же боба, у которого свет отскакивает (см. hitSide маятника)
+    var beatsPerIndicator: Int = 1
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityDimFlashingLights) private var dimFlashingLights
@@ -142,8 +167,14 @@ struct MetronomeFlashView: View {
                 let beatIndex = Int(t / interval)
                 let style = pattern[beatIndex % beats]
 
-                // Удар по чётным долям приходится в левый боб, по нечётным — в правый
-                let hitX = beatIndex % 2 == 0
+                // Боб удара: большой пролёт стартует от «своего» боба доли,
+                // отскоки триоли бьют в противоположный
+                let grouping = max(1, beatsPerIndicator)
+                let quarter = Int(floor(Double(beatIndex) / Double(grouping)))
+                let sub = beatIndex - quarter * grouping
+                let base = ((quarter % 2) + 2) % 2
+                let hitSide = sub == 0 ? base : 1 - base
+                let hitX = hitSide == 0
                     ? PendulumGeometry.leftX(size)
                     : PendulumGeometry.rightX(size)
                 let hitCenter = CGPoint(x: hitX, y: PendulumGeometry.midY(size))
@@ -202,6 +233,10 @@ struct MetronomePendulumView: View {
     let barCounterBars: Int
     let barCounterMinutes: Int
     let countInBars: Int
+    /// Сколько долей паттерна приходится на один мини-боб.
+    /// У триолей три пролёта складываются в одну четверть, поэтому
+    /// ряд индикаторов остаётся четырьмя долями обычного 4/4.
+    var beatsPerIndicator: Int = 1
 
     /// Доступность: убираем стробирующие и «летающие» эффекты
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -216,6 +251,51 @@ struct MetronomePendulumView: View {
     private func style(ofBeat beatIndex: Int) -> BeatStyle {
         let beats = max(1, pattern.count)
         return pattern[((beatIndex % beats) + beats) % beats]
+    }
+
+    /// Сколько долей паттерна складываются в одну «живую» долю маятника
+    private var grouping: Int { max(1, beatsPerIndicator) }
+
+    /// Место доли внутри группы: 0 — большой пролёт, дальше — отскоки
+    private func subIndex(ofBeat beat: Int) -> Int {
+        beat - Int(floor(Double(beat) / Double(grouping))) * grouping
+    }
+
+    /// Боб, у которого доля встречает свет: 0 — левый, 1 — правый.
+    /// Большой пролёт стартует от «своего» боба доли, а отскоки живут
+    /// у противоположного — того, в который свет только что ударился.
+    private func hitSide(ofBeat beat: Int) -> Int {
+        let quarter = Int(floor(Double(beat) / Double(grouping)))
+        let base = ((quarter % 2) + 2) % 2
+        return subIndex(ofBeat: beat) == 0 ? base : 1 - base
+    }
+
+    /// Хореография доли: либо длинный пролёт от боба к бобу, либо отскок —
+    /// свет отпрыгивает от боба и падает обратно, теряя высоту, как мяч.
+    /// Так триоль читается самим движением, без единой лишней детали.
+    private func flight(beat: Int, phase: Double, leftX: CGFloat, rightX: CGFloat) -> (x: CGFloat, speed: Double) {
+        let span = rightX - leftX
+        let side = hitSide(ofBeat: beat)
+        let sub = subIndex(ofBeat: beat)
+
+        guard sub > 0 else {
+            // Косинусное сглаживание: у бобов свет замедляется, как маятник
+            let eased = 0.5 - 0.5 * cos(.pi * phase)
+            let x = side == 0 ? leftX + span * CGFloat(eased) : rightX - span * CGFloat(eased)
+            return (x, sin(.pi * phase))
+        }
+
+        // Отскок: параболическая дуга внутрь, каждая следующая ниже —
+        // энергия уходит, и к началу новой доли свет затихает у боба
+        let beanX = side == 0 ? leftX : rightX
+        let inward: CGFloat = side == 0 ? 1 : -1
+        let amplitude = span * (sub == 1 ? 0.2 : 0.085)
+        let hop = 4 * phase * (1 - phase)
+        let x = beanX + inward * amplitude * CGFloat(hop)
+        // Скорость параболы линейна по фазе; масштабируем по высоте прыжка,
+        // чтобы вытягивание точки на отскоках было тише, чем в пролёте
+        let speed = min(1, abs(1 - 2 * phase) * Double(amplitude / (span * 0.5)))
+        return (x, speed)
     }
 
     /// Амплитуда пружинного пульса боба по силе удара
@@ -411,20 +491,13 @@ struct MetronomePendulumView: View {
                 let beanHeight = PendulumGeometry.beanHeight
                 let leftX = PendulumGeometry.leftX(size)
                 let rightX = PendulumGeometry.rightX(size)
-                let span = rightX - leftX
                 let centerX = size.width / 2
 
-                // Движение: одна доля — один пролёт, чётные доли бьют в левый боб.
-                // Косинусное сглаживание: у бобов точка замедляется, как маятник.
+                // Движение: доля — либо пролёт от боба к бобу, либо отскок
+                // от боба (у триолей: удар и два затухающих отскока)
                 let beatIndex = Int(t / interval)
                 let phase = (t - Double(beatIndex) * interval) / interval
-                let eased = 0.5 - 0.5 * cos(.pi * phase)
-                let movingRight = beatIndex % 2 == 0
-                let x = movingRight
-                    ? leftX + span * CGFloat(eased)
-                    : rightX - span * CGFloat(eased)
-                // Мгновенная скорость (0 у бобов, максимум в середине пролёта)
-                let speed = sin(.pi * phase)
+                let (x, speed) = flight(beat: beatIndex, phase: phase, leftX: leftX, rightX: rightX)
 
                 // Позиция в такте (с учётом count-in)
                 let currentBeat = beatIndex % beats
@@ -486,7 +559,7 @@ struct MetronomePendulumView: View {
                     guard hitStyle.accent != .mute else { continue }
                     let age = t - Double(hitBeat) * interval
                     guard age < waveDuration else { continue }
-                    let waveX = hitBeat % 2 == 0 ? leftX : rightX
+                    let waveX = hitSide(ofBeat: hitBeat) == 0 ? leftX : rightX
                     waves.append((CGPoint(x: waveX, y: midY), age, hitStyle))
                 }
 
@@ -556,9 +629,17 @@ struct MetronomePendulumView: View {
                     let appear = smooth((t - bornTime) / 0.4)
                     guard appear > 0.001 else { continue }
 
-                    // Последний удар по этому бобу (левый бьётся на чётных долях)
-                    let beatsSinceOwnHit = ((beatIndex - side) % 2 + 2) % 2
-                    let lastOwnHitBeat = beatIndex - beatsSinceOwnHit
+                    // Последний удар по этому бобу: у триолей боб принимает
+                    // прилёт и оба отскока, поэтому ищем ближайший свой удар
+                    var lastOwnHitBeat = -1
+                    for back in 0...(grouping * 2) {
+                        let candidate = beatIndex - back
+                        guard candidate >= 0 else { break }
+                        if hitSide(ofBeat: candidate) == side {
+                            lastOwnHitBeat = candidate
+                            break
+                        }
+                    }
                     let sinceOwnHit = t - Double(lastOwnHitBeat) * interval
                     let wasHit = lastOwnHitBeat >= 0
                     // Пружинный пульс по силе удара: сильная доля бьёт плотнее,
@@ -618,18 +699,26 @@ struct MetronomePendulumView: View {
                 // длинный залитый боб — сильная доля, обычный залитый — средняя,
                 // сплющенный маленький контур — беззвучная (mute). Цвет — цвет
                 // доли. Весь рисунок такта виден сразу, целиком.
-                let indicatorSpacing: CGFloat = beats > 8 ? 18 : 24
+                // Доли паттерна сворачиваются в группы: у триолей ряд
+                // показывает четыре четверти 4/4, а не двенадцать пролётов
+                let grouping = max(1, beatsPerIndicator)
+                let indicatorCount = max(1, beats / grouping)
+                let indicatorSpacing: CGFloat = indicatorCount > 8 ? 18 : 24
                 let indicatorY: CGFloat
                 if indicatorsOnTop {
                     indicatorY = topIndicatorY ?? (midY - 96)
                 } else {
                     indicatorY = midY + 96
                 }
-                let rowWidth = indicatorSpacing * CGFloat(beats - 1)
+                let rowWidth = indicatorSpacing * CGFloat(indicatorCount - 1)
                 let rowAppear = smooth(t / 0.4) * uiAppear
-                for beat in 0..<beats {
-                    let beatStyle = pattern[beat]
-                    let heat = beat == currentBeat ? exp(-sinceHit / 0.35) : 0
+                // Внутри группы «горит» вся четверть: её тепло считаем от
+                // момента, когда прозвучала первая доля группы
+                let currentIndicator = currentBeat / grouping
+                let sinceIndicatorHit = sinceHit + Double(currentBeat % grouping) * interval
+                for beat in 0..<indicatorCount {
+                    let beatStyle = pattern[beat * grouping]
+                    let heat = beat == currentIndicator ? exp(-sinceIndicatorHit / 0.35) : 0
 
                     var miniWidth: CGFloat
                     var miniHeight: CGFloat
@@ -661,7 +750,7 @@ struct MetronomePendulumView: View {
                         roundedRect: miniRect,
                         cornerRadius: min(miniWidth, miniHeight) / 2
                     )
-                    let isActive = beat == currentBeat
+                    let isActive = beat == currentIndicator
                     // Цвет: верхние неактивные — единый серый; активная — цвет доли
                     let baseColor: Color = isActive ? beatStyle.color : (indicatorsOnTop ? Color.white.opacity(0.8) : beatStyle.color)
 
@@ -727,10 +816,7 @@ struct MetronomePendulumView: View {
                         guard ghostTime >= 0 else { break }
                         let gBeat = Int(ghostTime / interval)
                         let gPhase = (ghostTime - Double(gBeat) * interval) / interval
-                        let gEased = 0.5 - 0.5 * cos(.pi * gPhase)
-                        let gX = gBeat % 2 == 0
-                            ? leftX + span * CGFloat(gEased)
-                            : rightX - span * CGFloat(gEased)
+                        let gX = flight(beat: gBeat, phase: gPhase, leftX: leftX, rightX: rightX).x
                         let gRadius = 8 - CGFloat(ghost) * 1.3
                         let gOpacity = 0.05 * (1 - Double(ghost) / 5) * speed
                         let gRect = CGRect(
