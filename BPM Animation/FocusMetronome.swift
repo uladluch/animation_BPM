@@ -876,15 +876,6 @@ struct MetronomePendulumView: View {
                     dotHeight *= CGFloat(1 + 0.3 * impact)
                 }
 
-                // Импульс субудара: тычок по летящей точке там, где она сейчас.
-                // Она сжимается поперёк курса и раздаётся вдоль него — толчок
-                // в спину, — но ни курса, ни скорости это не меняет.
-                // Беззвучный субудар импульса не даёт, время внутри четверти идёт.
-                if subHit > 0.001, !reduceMotion {
-                    dotHeight *= CGFloat(1 - 0.3 * subHit)
-                    dotWidth *= CGFloat(1 + 0.42 * subHit)
-                }
-
                 let dotRect = CGRect(
                     x: x - dotWidth / 2, y: midY - dotHeight / 2,
                     width: dotWidth, height: dotHeight
@@ -892,13 +883,12 @@ struct MetronomePendulumView: View {
                 let dotCornerRadius = min(dotWidth, dotHeight) / 2
                 let dotShape = Path(roundedRect: dotRect, cornerRadius: dotCornerRadius)
 
-                // Свечение дышит в ритм: вспыхивает на ударе, успокаивается в полёте
-                // Свечение вспыхивает на каждом звучащем ударе, но четвертная
-                // доля всегда ярче внутреннего субудара — иерархия акцентов
-                // читается и на слух, и на глаз
-                let glowPulse = subStyle.accent == .mute
+                // Свечение дышит в ритм: вспыхивает на ударе, успокаивается
+                // в полёте. Субудары его не трогают — маятник живёт четвертями,
+                // а триоль отзывается только в мини-бобах
+                let glowPulse = style(ofQuarter: quarterIndex).accent == .mute
                     ? 0
-                    : exp(-sinceHit / 0.15) * (isMainBeat ? 1.0 : 0.5)
+                    : exp(-phase * quarterInterval / 0.15)
                 // Более яркое свечение в count-in, плавно уменьшается
                 let glowBase = timeSinceCountIn < 0.6
                     ? 0.65 - 0.05 * smooth(timeSinceCountIn / 0.6)
