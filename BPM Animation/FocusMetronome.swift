@@ -689,11 +689,12 @@ struct MetronomePendulumView: View {
                     let scale = CGFloat(appear * (1 + pulse))
                     let proximity = max(0, 1 - distance / meltRange)
 
-                    // Предвкушение: боб замечает точку заранее (радиус 100pt)
-                    // и начинает раздуваться ещё до её прибытия — сильнее вширь,
-                    // чуть-чуть в рост
-                    let reach = max(0, 1 - Double(distance) / 100)
-                    let inflate = CGFloat(pow(reach, 1.6))
+                    // Предвкушение: боб замечает точку на подлёте (радиус 70pt)
+                    // и раздувается — сильнее вширь, чуть-чуть в рост.
+                    // Кривая крутая: почти весь рост приходится на последние
+                    // пункты пути, чтобы удар читался как удар, а не как наплыв
+                    let reach = max(0, 1 - Double(distance) / 70)
+                    let inflate = CGFloat(pow(reach, 2.6))
                     let width = beanWidth * beanSizeTransition * (1 + 0.55 * inflate) * scale
                     let height = beanHeight * beanSizeTransition * (1 + 0.18 * inflate) * scale
 
@@ -724,7 +725,7 @@ struct MetronomePendulumView: View {
                         case .strong: 1.15
                         default: 1.0
                         }
-                        let glow = min(0.95, pow(proximity, 1.6) * glowScale)
+                        let glow = min(0.95, pow(proximity, 2.6) * glowScale)
                         context.fill(
                             bean,
                             with: .color(nearestHitStyle.color.opacity(glow * appear))
