@@ -148,6 +148,14 @@ private enum PendulumGeometry {
     static func rightX(_ size: CGSize) -> CGFloat { size.width - margin - beanWidth / 2 }
     static func midY(_ size: CGSize) -> CGFloat { size.height / 2 }
 
+    /// Насколько точка останавливается, не доходя до центра боба: полуширина
+    /// раздутого ударом боба плюс радиус самой точки. Свет бьёт в грань
+    /// капсулы и внутрь неё не заходит.
+    static let contactInset: CGFloat = beanWidth / 2 * 1.55 + 11
+
+    static func contactLeftX(_ size: CGSize) -> CGFloat { leftX(size) + contactInset }
+    static func contactRightX(_ size: CGSize) -> CGFloat { rightX(size) - contactInset }
+
     /// Положение света по номеру четверти и фазе внутри неё: одна четверть —
     /// один полный проход от боба к бобу. Косинусное сглаживание даёт
     /// замедление у краёв и максимальную скорость в центре.
@@ -158,8 +166,8 @@ private enum PendulumGeometry {
     /// предыдущую четверть с фазой 0.999 — то есть в противоположный край.
     static func x(quarter: Int, phase: Double, size: CGSize) -> CGFloat {
         let eased = 0.5 - 0.5 * cos(.pi * phase)
-        let l = leftX(size)
-        let span = rightX(size) - l
+        let l = contactLeftX(size)
+        let span = contactRightX(size) - l
         return l + span * CGFloat(quarter % 2 == 0 ? eased : 1 - eased)
     }
 
@@ -543,11 +551,6 @@ struct MetronomePendulumView: View {
                     ? 1.3 - 0.3 * smooth(timeSinceCountIn / 0.6)
                     : 1.0
 
-                // Ближайшая по времени четверть: до середины пролёта — прошедшая,
-                // после — предстоящая. Её цвет несут точка и боб при слиянии.
-                let nearestQuarter = phase < 0.5 ? quarterIndex : quarterIndex + 1
-                let nearestHitStyle = style(ofQuarter: nearestQuarter)
-
                 // «Температура» сцены: остаточное свечение копят только
                 // звучащие доли — пауза тепла не оставляет. К концу такта бобы
                 // тлеют, а на единице сбрасываются в серый с «выдохом».
@@ -649,18 +652,10 @@ struct MetronomePendulumView: View {
                     }
                 }
 
-                // Бобы по краям: рождаются при первом ударе точки,
-                // тянутся ей навстречу и вытягиваются в каплю при слиянии
-                let meltRange: CGFloat = 60
-                var nearestBeanX = leftX
-                var nearestDistance = CGFloat.infinity
+                // Бобы по краям: рождаются при первом ударе точки и взрываются,
+                // когда свет в них попадает
                 for side in 0..<2 {
                     let beanX = side == 0 ? leftX : rightX
-                    let distance = abs(x - beanX)
-                    if distance < nearestDistance {
-                        nearestDistance = distance
-                        nearestBeanX = beanX
-                    }
 
                     // Левый боб рождается на первом ударе, правый свет
                     // вырисовывает по ходу первого пролёта: боб растёт вместе
@@ -688,31 +683,20 @@ struct MetronomePendulumView: View {
 
                     let scale = CGFloat(appear * (1 + pulse))
 
-                    // Предвкушение: боб замечает точку у самого подлёта (58pt)
-                    // и раздувается — сильнее вширь, чуть-чуть в рост.
-                    // Кривая крутая: почти весь рост приходится на последние
-                    // пункты пути, чтобы удар читался как удар, а не как наплыв
-                    let reach = max(0, 1 - Double(distance) / 58)
-                    let inflate = CGFloat(pow(reach, 3.4))
-                    let width = beanWidth * beanSizeTransition * (1 + 0.55 * inflate) * scale
-                    let height = beanHeight * beanSizeTransition * (1 + 0.18 * inflate) * scale
-
-                    // …и подаётся навстречу точке: прирост ширины уходит
-                    // в ближний к ней край, а когда точка входит в центр —
-                    // боб выравнивается
-                    let dotAlong = x - beanX
-                    let direction = max(-1, min(1, dotAlong / 24))
-                    let extraWidth = width - beanWidth * scale
-                    let reachOffset = direction * 0.42 * extraWidth
+                    // Взрыв: боб ничего не предвкушает и на подлёте стоит
+                    // спокойно — его распирает в момент попадания и тут же
+                    // отпускает. Резкий фронт даёт удар, а не наплыв.
+                    let burst = wasHit ? CGFloat(exp(-sinceOwnHit / 0.1)) : 0
+                    let width = beanWidth * beanSizeTransition * (1 + 0.55 * burst) * scale
+                    let height = beanHeight * beanSizeTransition * (1 + 0.18 * burst) * scale
 
                     let rect = CGRect(
-                        x: beanX + reachOffset - width / 2, y: midY - height / 2,
+                        x: beanX - width / 2, y: midY - height / 2,
                         width: width, height: height
                     )
                     let bean = Path(roundedRect: rect, cornerRadius: min(width, height) / 2)
 
-                    let nearestIsMute = nearestHitStyle.accent == .mute
-                    let base = nearestIsMute ? 0.22 : (0.22 + 0.3 * barHeat)
+                    let base = ownStyle.accent == .mute ? 0.22 : (0.22 + 0.3 * barHeat)
                     context.fill(bean, with: .color(.white.opacity(base * appear)))
 
                     // Цвет — событие удара, а не подлёта: боб растёт и раздувается
@@ -782,7 +766,8 @@ struct MetronomePendulumView: View {
                         miniHeight = 22
                     }
                     // На своей доле мини-боб подрастает и вспыхивает
-                    let grow = CGFloat(1 + 0.25 * heat + 0.16 * subHeat)
+                    let growth: Double = 1 + 0.25 * heat + 0.16 * subHeat
+                    let grow = CGFloat(growth)
                     miniWidth *= grow
                     miniHeight *= grow
 
@@ -877,28 +862,24 @@ struct MetronomePendulumView: View {
                 let dotAppear = smooth(t / 0.45)
                 guard dotAppear > 0.001 else { return }
 
-                let nearestIsMute = nearestHitStyle.accent == .mute
-                let effectiveMorph = nearestIsMute ? 0.0 : max(0, 1 - nearestDistance / meltRange)
-                
                 // Базовый размер точки: увеличен в count-in, плавно уменьшается после
                 let dotBaseDiameter: CGFloat = timeSinceCountIn < 0.6
                     ? 26 - 4 * CGFloat(smooth(timeSinceCountIn / 0.6))
                     : 22
                 let dotDiameter: CGFloat = dotBaseDiameter * CGFloat(0.5 + 0.5 * dotAppear)
                 
-                // Вытягивание по ходу движения, объём сохраняется; у бобов гаснет
-                let stretchBase = reduceMotion ? 1.0 : (1 + 0.22 * speed * (1 - effectiveMorph))
-                let stretch = nearestIsMute ? 1.0 : stretchBase
+                // Вытягивание по ходу движения, объём сохраняется. В боб точка
+                // не превращается: она в него бьёт и остаётся собой
+                let stretch = reduceMotion ? 1.0 : (1 + 0.22 * speed)
                 var dotWidth = dotDiameter * CGFloat(stretch)
                 var dotHeight = dotDiameter / CGFloat(stretch)
-                // Цель морфа — тот же раздутый вертикальный боб:
-                // в момент слияния формы совпадают один в один
-                if !nearestIsMute {
-                    let targetInflate = CGFloat(pow(effectiveMorph, 1.3))
-                    let targetWidth = beanWidth * beanSizeTransition * (1 + 0.55 * targetInflate)
-                    let targetHeight = beanHeight * beanSizeTransition * (1 + 0.18 * targetInflate)
-                    dotWidth += (targetWidth - dotWidth) * effectiveMorph
-                    dotHeight += (targetHeight - dotHeight) * effectiveMorph
+
+                // Удар о боб: на самом контакте точка расплющивается о капсулу
+                // и упруго восстанавливается, как мяч о стену
+                let impact = exp(-(phase < 0.5 ? phase : 1 - phase) * quarterInterval / 0.06)
+                if impact > 0.01, !reduceMotion {
+                    dotWidth *= CGFloat(1 - 0.42 * impact)
+                    dotHeight *= CGFloat(1 + 0.3 * impact)
                 }
 
                 // Импульс субудара: тычок по летящей точке там, где она сейчас.
@@ -910,11 +891,8 @@ struct MetronomePendulumView: View {
                     dotWidth *= CGFloat(1 + 0.42 * subHit)
                 }
 
-                let attraction = nearestIsMute ? 0.0 : (effectiveMorph * effectiveMorph)
-                let dotCenterX = x + (nearestBeanX - x) * attraction
-
                 let dotRect = CGRect(
-                    x: dotCenterX - dotWidth / 2, y: midY - dotHeight / 2,
+                    x: x - dotWidth / 2, y: midY - dotHeight / 2,
                     width: dotWidth, height: dotHeight
                 )
                 let dotCornerRadius = min(dotWidth, dotHeight) / 2
@@ -948,15 +926,8 @@ struct MetronomePendulumView: View {
                         with: .color(.white.opacity(glowOpacity))
                     )
                 }
+                // Точка всегда белая: цвет доли несёт боб, который она взрывает
                 context.fill(dotShape, with: .color(.white.opacity(Double(dotAppear))))
-                // Подлетая к бобу, точка окрашивается в цвет ближайшего удара
-                let mergeTint = Double(effectiveMorph) * 0.85
-                if mergeTint > 0.01 {
-                    context.fill(
-                        dotShape,
-                        with: .color(nearestHitStyle.color.opacity(mergeTint * Double(dotAppear)))
-                    )
-                }
             }
         }
         .allowsHitTesting(false)
